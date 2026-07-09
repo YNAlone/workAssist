@@ -1,0 +1,90 @@
+name: Feishu Claude Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Orchestrator task id
+        required: true
+      prompt:
+        description: Task prompt for Claude
+        required: true
+      base_branch:
+        description: Base branch to checkout
+        required: true
+        default: main
+      work_branch:
+        description: Branch to create and push
+        required: true
+      callback_url:
+        description: Orchestrator callback URL
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  claude:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify running
+        run: |
+          curl -sS -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"running\"}"
+
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch }}
+
+      - name: Create work branch
+        run: git checkout -b "${{ inputs.work_branch }}"
+
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: ${{ inputs.prompt }}
+          claude_args: |
+            --max-turns 20
+            --allowedTools Edit,Read,Write,Bash
+
+      - name: Commit and push
+        run: |
+          git config user.name "feishu-claude-bot"
+          git config user.email "feishu-claude-bot@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 1
+          fi
+          git add -A
+          git commit -m "feat: ${{ inputs.job_id }} automated change"
+          git push origin "${{ inputs.work_branch }}"
+
+      - name: Create pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_URL=$(gh pr create \
+            --base "${{ inputs.base_branch }}" \
+            --head "${{ inputs.work_branch }}" \
+            --title "AI: ${{ inputs.job_id }}" \
+            --body "Automated change requested from Feishu task ${{ inputs.job_id }}.\n\nPrompt:\n${{ inputs.prompt }}")
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Notify PR created
+        if: success()
+        run: |
+          curl -sS -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"pr_created\",\"pr_url\":\"${{ steps.pr.outputs.url }}\",\"summary\":\"Pull request created\"}"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          curl -sS -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"failed\",\"error\":\"workflow failed\"}"
