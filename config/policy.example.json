@@ -1,0 +1,22 @@
+{
+  "allowed_repos": [
+    "your-org/your-repo"
+  ],
+  "protected_branches": ["main", "master", "release"],
+  "allowed_requesters": [
+  ],
+  "require_approval_for_risk": ["high"],
+  "high_risk_keywords": [
+    "delete",
+    "drop table",
+    "migration",
+    "upgrade dependencies",
+    "refactor entire",
+    "force push",
+    "production config",
+    "remove all"
+  ],
+  "max_concurrent_jobs": 3,
+  "default_base_branch": "main",
+  "work_branch_prefix": "ai/feishu"
+}
