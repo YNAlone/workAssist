@@ -26,7 +26,11 @@ class Orchestrator:
         self.audit.record(event, task_id=task.id, **payload)
 
     def _notify(self, task: Task) -> None:
-        self.feishu.notify_task(task, build_task_card(task))
+        try:
+            self.feishu.notify_task(task, build_task_card(task))
+        except Exception as exc:  # noqa: BLE001 - notification must not fail the main flow
+            self._append_audit(task, "feishu.notify_failed", error=str(exc))
+            self.store.save(task)
 
     def _active_job_count(self) -> int:
         return len(self.store.list_active())
@@ -128,16 +132,21 @@ class Orchestrator:
         self._notify(task)
         return task
 
+    def _extract_verification_token(self, payload: dict) -> str:
+        # Feishu url_verification uses top-level token; event schema 2.0 uses header.token.
+        return str(payload.get("token") or payload.get("header", {}).get("token") or "")
+
     def handle_feishu_message(self, payload: dict) -> dict:
         challenge = self._handle_url_verification(payload)
         if challenge is not None:
             return challenge
 
-        if not self.feishu.verify_token(payload.get("token", "")):
+        if not self.feishu.verify_token(self._extract_verification_token(payload)):
             raise PolicyError("Invalid Feishu verification token")
 
         event = payload.get("header", {}).get("event_type") or payload.get("event", {}).get("type")
         if event not in {"im.message.receive_v1", "message"}:
+            self.audit.record("feishu.ignored", reason="unsupported_event", event=event)
             return {"ignored": True, "event": event}
 
         from .parser import extract_message_text, parse_command
@@ -145,7 +154,8 @@ class Orchestrator:
         text = extract_message_text(payload)
         request = parse_command(text)
         if not request:
-            return {"ignored": True, "reason": "unsupported command"}
+            self.audit.record("feishu.ignored", reason="unsupported_command", text=text[:200])
+            return {"ignored": True, "reason": "unsupported command", "text": text[:200]}
 
         event_body = payload.get("event", {})
         sender = event_body.get("sender", {}).get("sender_id", {})
@@ -161,7 +171,7 @@ class Orchestrator:
         if challenge is not None:
             return challenge
 
-        if not self.feishu.verify_token(payload.get("token", "")):
+        if not self.feishu.verify_token(self._extract_verification_token(payload)):
             raise PolicyError("Invalid Feishu verification token")
 
         action = payload.get("action", {})

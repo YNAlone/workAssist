@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -29,6 +31,21 @@ class AutomationHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _log_request(self, path: str, payload: dict[str, Any], result: dict[str, Any] | None = None, error: str = "") -> None:
+        log_path = Path(self.orchestrator.settings.audit_log_path).parent / "requests.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "path": path,
+            "client": self.client_address[0],
+            "payload_keys": sorted(payload.keys()),
+            "event_type": payload.get("header", {}).get("event_type") or payload.get("type"),
+            "result": result,
+            "error": error,
+        }
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         return
 
@@ -49,19 +66,24 @@ class AutomationHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        payload: dict[str, Any] = {}
         try:
             payload = self._read_json()
             if path == "/feishu/events":
                 result = self.orchestrator.handle_feishu_message(payload)
+                self._log_request(path, payload, result=result)
                 self._send_json(HTTPStatus.OK, result)
                 return
             if path == "/feishu/actions":
                 result = self.orchestrator.handle_card_action(payload)
+                self._log_request(path, payload, result=result)
                 self._send_json(HTTPStatus.OK, result)
                 return
             if path == "/callbacks/runner":
                 task = self.orchestrator.handle_runner_callback(payload)
-                self._send_json(HTTPStatus.OK, {"task_id": task.id, "status": task.status.value})
+                result = {"task_id": task.id, "status": task.status.value}
+                self._log_request(path, payload, result=result)
+                self._send_json(HTTPStatus.OK, result)
                 return
             if path == "/tasks":
                 from .models import TaskRequest
@@ -75,16 +97,22 @@ class AutomationHandler(BaseHTTPRequestHandler):
                     issue=payload.get("issue", ""),
                 )
                 task = self.orchestrator.create_task(request)
-                self._send_json(HTTPStatus.CREATED, task.to_dict())
+                result = task.to_dict()
+                self._log_request(path, payload, result={"task_id": task.id, "status": task.status.value})
+                self._send_json(HTTPStatus.CREATED, result)
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
         except PolicyError as exc:
+            self._log_request(path, payload, error=str(exc))
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except KeyError as exc:
+            self._log_request(path, payload, error=f"missing field: {exc.args[0]}")
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"missing field: {exc.args[0]}"})
         except json.JSONDecodeError:
+            self._log_request(path, payload, error="invalid json")
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})
         except Exception as exc:  # noqa: BLE001
+            self._log_request(path, payload, error=str(exc))
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
 

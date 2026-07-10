@@ -10,7 +10,11 @@ FIELD_PATTERN = re.compile(r'(\w+)=(".*?"|\'.*?\'|\S+)')
 
 
 def parse_command(text: str) -> TaskRequest | None:
-    stripped = text.strip()
+    # Feishu group messages often prefix mentions like "@_user_1 /ai-fix ..."
+    stripped = re.sub(r"@_user_\d+\s*", "", text).strip()
+    if "/ai-fix" not in stripped:
+        return None
+    stripped = stripped[stripped.index("/ai-fix") :]
     if not stripped.startswith("/ai-fix"):
         return None
 
