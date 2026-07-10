@@ -51,7 +51,7 @@ jobs:
           ANTHROPIC_SMALL_FAST_MODEL: kimi-for-coding
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          base_url: https://api.kimi.com/coding/
+          show_full_output: true
           prompt: ${{ inputs.prompt }}
           claude_args: |
             --max-turns 20
@@ -62,7 +62,11 @@ jobs:
         run: |
           git config user.name "feishu-claude-bot"
           git config user.email "feishu-claude-bot@users.noreply.github.com"
-          if git diff --quiet; then
+          echo "=== git status ==="
+          git status --short
+          echo "=== git diff ==="
+          git diff --stat
+          if git diff --quiet && git diff --cached --quiet; then
             echo "No changes to commit"
             exit 1
           fi
