@@ -44,11 +44,17 @@ jobs:
 
       - name: Run Claude Code
         uses: anthropics/claude-code-action@v1
+        env:
+          ANTHROPIC_BASE_URL: https://api.kimi.com/coding/
+          ANTHROPIC_MODEL: kimi-for-coding
+          ANTHROPIC_SMALL_FAST_MODEL: kimi-for-coding
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          base_url: https://api.kimi.com/coding/
           prompt: ${{ inputs.prompt }}
           claude_args: |
             --max-turns 20
+            --model kimi-for-coding
             --allowedTools Edit,Read,Write,Bash
 
       - name: Commit and push

@@ -1,6 +1,6 @@
 {
   "allowed_repos": [
-    "your-org/your-repo"
+    "YNAlone/workAssist"
   ],
   "protected_branches": ["main", "master", "release"],
   "allowed_requesters": [
@@ -16,7 +16,7 @@
     "production config",
     "remove all"
   ],
-  "max_concurrent_jobs": 3,
+  "max_concurrent_jobs": 5,
   "default_base_branch": "main",
-  "work_branch_prefix": "ai/feishu"
+  "work_branch_prefix": "ai/dev"
 }

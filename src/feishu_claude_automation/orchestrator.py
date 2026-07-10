@@ -129,11 +129,12 @@ class Orchestrator:
         return task
 
     def handle_feishu_message(self, payload: dict) -> dict:
+        challenge = self._handle_url_verification(payload)
+        if challenge is not None:
+            return challenge
+
         if not self.feishu.verify_token(payload.get("token", "")):
             raise PolicyError("Invalid Feishu verification token")
-
-        if payload.get("type") == "url_verification":
-            return {"challenge": payload.get("challenge", "")}
 
         event = payload.get("header", {}).get("event_type") or payload.get("event", {}).get("type")
         if event not in {"im.message.receive_v1", "message"}:
@@ -156,6 +157,10 @@ class Orchestrator:
         return {"task_id": task.id, "status": task.status.value}
 
     def handle_card_action(self, payload: dict) -> dict:
+        challenge = self._handle_url_verification(payload)
+        if challenge is not None:
+            return challenge
+
         if not self.feishu.verify_token(payload.get("token", "")):
             raise PolicyError("Invalid Feishu verification token")
 
@@ -175,6 +180,11 @@ class Orchestrator:
             return {"ignored": True, "action": action_name}
 
         return {"task_id": task.id, "status": task.status.value}
+
+    def _handle_url_verification(self, payload: dict) -> dict | None:
+        if payload.get("type") != "url_verification":
+            return None
+        return {"challenge": payload.get("challenge", "")}
 
     def _require_task(self, task_id: str) -> Task:
         task = self.store.get(task_id)
