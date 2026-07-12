@@ -100,7 +100,13 @@ curl -X POST http://localhost:8080/tasks \
 添加仓库 Secrets：
 
 - `ANTHROPIC_API_KEY`
+- `GH_PAT`（推荐）：具有 `repo` 权限的 Personal Access Token，用于创建 Pull Request。若未配置，则依赖仓库设置中的「Allow GitHub Actions to create and approve pull requests」选项。
 - 该仓库所需的任意包注册表或测试凭据。
+
+在 **Settings → Actions → General → Workflow permissions** 中，还需确保：
+
+- 选择 **Read and write permissions**
+- 勾选 **Allow GitHub Actions to create and approve pull requests**（未配置 `GH_PAT` 时必需）
 
 Orchestrator 会使用 `job_id`、`prompt`、`base_branch`、`work_branch` 和 `callback_url` 作为输入来调度此工作流。
 
