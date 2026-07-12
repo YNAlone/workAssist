@@ -44,3 +44,25 @@ class TaskStore:
         with self._lock:
             tasks = [Task.from_dict(item) for item in self._read_all().values()]
         return [task for task in tasks if task.status in active]
+
+    def get_latest_by_session(self, session_id: str) -> Task | None:
+        if not session_id:
+            return None
+        with self._lock:
+            tasks = [Task.from_dict(item) for item in self._read_all().values()]
+        matched = [task for task in tasks if task.session_id == session_id]
+        if not matched:
+            return None
+        matched.sort(key=lambda item: item.updated_at, reverse=True)
+        return matched[0]
+
+    def find_active_by_chat(self, chat_id: str) -> list[Task]:
+        active = {
+            TaskStatus.QUEUED,
+            TaskStatus.DISPATCHED,
+            TaskStatus.RUNNING,
+            TaskStatus.PENDING_APPROVAL,
+        }
+        with self._lock:
+            tasks = [Task.from_dict(item) for item in self._read_all().values()]
+        return [task for task in tasks if task.chat_id == chat_id and task.status in active]

@@ -1,6 +1,21 @@
 # Kimi Code API 配置说明
 
-本项目通过 GitHub Actions 调用 Claude Code，并将 API 指向 Kimi Code 端点。
+本项目在两处使用 Kimi：
+
+1. **GitHub Actions Runner**：通过 Claude Code Action 改代码（仓库 Secret `ANTHROPIC_API_KEY`）
+2. **Orchestrator**：自然语言意图理解与多轮对话（环境变量 `ORCH_LLM_API_KEY`）
+
+## Orchestrator 侧
+
+在 `.env` 中配置：
+
+| 变量 | 说明 |
+|------|------|
+| `ORCH_LLM_API_KEY` | Kimi API Key（`sk-kimi-...`） |
+| `ORCH_LLM_BASE_URL` | 默认 `https://api.kimi.com/coding/` |
+| `ORCH_LLM_MODEL` | 默认 `kimi-for-coding` |
+
+`AUTOMATION_DRY_RUN=true` 时不会调用 LLM，使用内置 mock 意图解析。
 
 ## GitHub Secrets 配置
 
@@ -9,6 +24,7 @@
 | Secret 名称 | 值 |
 |-------------|-----|
 | `ANTHROPIC_API_KEY` | 你的 Kimi Code API Key（`sk-kimi-...`） |
+| `GH_PAT`（推荐） | 具有 `repo` 权限的 PAT，用于创建 PR |
 
 API 地址已在 workflow 中配置，无需额外 Secret：
 
@@ -33,8 +49,15 @@ gh secret set ANTHROPIC_API_KEY --repo YNAlone/workAssist
 ## 验证
 
 1. 推送 workflow 到 GitHub
-2. 在 Orchestrator 手动创建任务，或从飞书发送 `/ai-fix` 指令
-3. 打开 GitHub Actions，查看 `Feishu Claude Automation` 是否成功运行
+2. 在 Orchestrator `.env` 填好 `ORCH_LLM_API_KEY` 并启动服务
+3. 在飞书对机器人说自然语言，例如：「帮我在 workAssist 项目新增 xxx 功能」
+4. 确认计划卡片后，打开 GitHub Actions 查看 `Feishu Claude Automation`
+
+也可继续使用结构化命令：
+
+```text
+/ai-fix repo=YNAlone/workAssist branch=main desc="Fix refund rounding bug"
+```
 
 ## 安全提醒
 

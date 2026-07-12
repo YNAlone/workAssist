@@ -69,6 +69,39 @@ class FeishuClient:
             )
         return {"skipped": True, "reason": "no feishu credentials"}
 
+    def send_text(self, chat_id: str, text: str, reply_to_message_id: str = "") -> dict[str, Any]:
+        if not chat_id:
+            return {"skipped": True, "reason": "missing chat_id"}
+        if not text:
+            return {"skipped": True, "reason": "empty text"}
+
+        token = self.get_tenant_access_token()
+        content = json.dumps({"text": text}, ensure_ascii=False)
+
+        if token:
+            if reply_to_message_id:
+                return self._request(
+                    f"https://open.feishu.cn/open-apis/im/v1/messages/{reply_to_message_id}/reply",
+                    {"content": content, "msg_type": "text"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            return self._request(
+                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                {
+                    "receive_id": chat_id,
+                    "msg_type": "text",
+                    "content": content,
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        if self.settings.feishu_bot_webhook:
+            return self._request(
+                self.settings.feishu_bot_webhook,
+                {"msg_type": "text", "content": {"text": text}},
+            )
+        return {"skipped": True, "reason": "no feishu credentials"}
+
     def notify_task(self, task: Task, card: dict[str, Any]) -> dict[str, Any]:
         if not task.chat_id:
             return {"skipped": True, "reason": "missing chat_id"}

@@ -47,6 +47,7 @@ class GitHubClient:
                 "base_branch": task.base_branch,
                 "work_branch": task.work_branch,
                 "callback_url": callback_url,
+                "mode": task.mode.value,
             },
         }
         self._request("POST", url, payload)

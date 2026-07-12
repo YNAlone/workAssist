@@ -27,6 +27,11 @@ class Settings:
     policy_file: Path
     task_store_path: Path
     audit_log_path: Path
+    orch_llm_api_key: str
+    orch_llm_base_url: str
+    orch_llm_model: str
+    session_store_path: Path
+    session_ttl_minutes: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -46,4 +51,12 @@ class Settings:
             policy_file=Path(os.getenv("POLICY_FILE", root / "config/policy.example.json")),
             task_store_path=Path(os.getenv("TASK_STORE_PATH", root / "data/tasks.json")),
             audit_log_path=Path(os.getenv("AUDIT_LOG_PATH", root / "data/audit.log")),
+            orch_llm_api_key=os.getenv("ORCH_LLM_API_KEY")
+            or os.getenv("ANTHROPIC_API_KEY")
+            or os.getenv("KIMI_API_KEY")
+            or "",
+            orch_llm_base_url=os.getenv("ORCH_LLM_BASE_URL", "https://api.kimi.com/coding/"),
+            orch_llm_model=os.getenv("ORCH_LLM_MODEL", "kimi-for-coding"),
+            session_store_path=Path(os.getenv("SESSION_STORE_PATH", root / "data/sessions.json")),
+            session_ttl_minutes=int(os.getenv("SESSION_TTL_MINUTES", "120")),
         )

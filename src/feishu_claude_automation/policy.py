@@ -65,3 +65,29 @@ class Policy:
         for protected in self.protected_branches:
             if work_branch == protected:
                 raise PolicyError(f"Work branch cannot equal protected branch: {protected}")
+
+    def resolve_repo(self, repo_hint: str) -> str:
+        hint = (repo_hint or "").strip()
+        if not hint:
+            return ""
+        if not self.allowed_repos:
+            return hint
+        if hint in self.allowed_repos:
+            return hint
+        lowered = hint.lower()
+        for allowed in self.allowed_repos:
+            if allowed.lower() == lowered:
+                return allowed
+            short = allowed.split("/")[-1]
+            if short.lower() == lowered:
+                return allowed
+            if short.lower() in lowered or lowered in short.lower():
+                return allowed
+        return hint
+
+    def normalize_work_branch(self, hint: str, task_id: str) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9._/-]+", "-", (hint or "").strip()).strip("-/")
+        if cleaned:
+            self.ensure_work_branch_allowed(cleaned)
+            return cleaned
+        return self.build_work_branch(task_id)

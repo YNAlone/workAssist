@@ -9,9 +9,13 @@ from .models import TaskRequest
 FIELD_PATTERN = re.compile(r'(\w+)=(".*?"|\'.*?\'|\S+)')
 
 
+def strip_feishu_mentions(text: str) -> str:
+    return re.sub(r"@_user_\d+\s*", "", text).strip()
+
+
 def parse_command(text: str) -> TaskRequest | None:
     # Feishu group messages often prefix mentions like "@_user_1 /ai-fix ..."
-    stripped = re.sub(r"@_user_\d+\s*", "", text).strip()
+    stripped = strip_feishu_mentions(text)
     if "/ai-fix" not in stripped:
         return None
     stripped = stripped[stripped.index("/ai-fix") :]
@@ -37,6 +41,7 @@ def parse_command(text: str) -> TaskRequest | None:
         requester_id=fields.get("requester", ""),
         chat_id=fields.get("chat", ""),
         issue=fields.get("issue", ""),
+        work_branch=fields.get("work_branch", ""),
     )
 
 
@@ -51,3 +56,14 @@ def extract_message_text(payload: dict) -> str:
             return content
         return parsed.get("text", content)
     return str(content)
+
+
+def looks_like_confirmation(text: str) -> bool:
+    cleaned = strip_feishu_mentions(text).strip().lower()
+    tokens = ("确认", "执行", "开始", "可以", "没问题", "ok", "yes", "approve", "批准", "同意")
+    return any(token in cleaned for token in tokens)
+
+
+def looks_like_cancel(text: str) -> bool:
+    cleaned = strip_feishu_mentions(text).strip().lower()
+    return any(token in cleaned for token in ("取消", "算了", "停止", "cancel", "stop"))
