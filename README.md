@@ -122,3 +122,7 @@ Orchestrator 会使用 `job_id`、`prompt`、`base_branch`、`work_branch` 和 `
 - 高风险提示词在调度 Runner 之前需要明确审批。
 - GitHub 工作流会创建 PR，不会自动合并。
 - 每个任务在任务存储中保留请求者、提示词、分支、状态、回调、PR URL 和错误详情。
+
+## 测试
+
+运行单元测试：`pytest tests/`
