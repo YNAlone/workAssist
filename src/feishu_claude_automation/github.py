@@ -41,11 +41,12 @@ class GitHubClient:
         )
         # workflow YAML must exist on this ref; prefer explicit dispatch ref (e.g. default branch)
         dispatch_ref = self.settings.github_dispatch_ref or task.base_branch
+        prompt = self._wrap_prompt(task)
         payload = {
             "ref": dispatch_ref,
             "inputs": {
                 "job_id": task.id,
-                "prompt": task.prompt,
+                "prompt": prompt,
                 "base_branch": task.base_branch,
                 "work_branch": task.work_branch,
                 "callback_url": callback_url,
@@ -54,3 +55,17 @@ class GitHubClient:
         }
         self._request("POST", url, payload)
         return {"workflow": self.settings.github_workflow_id, "repo": task.repo, "job_id": task.id}
+
+    @staticmethod
+    def _wrap_prompt(task: Task) -> str:
+        """Ensure analysis-only work is persisted as markdown for Feishu delivery."""
+        return (
+            f"{task.prompt.rstrip()}\n\n"
+            "---\n"
+            "## 输出约束（必须遵守）\n"
+            f"1. 若本任务主要是分析 / 说明 / 问答，且不需要修改业务代码，请把完整结论写入 "
+            f"`docs/analysis-{task.id}.md`（Markdown 中文），不要只在对话中回复。\n"
+            "2. 写入该文件后保存；后续 CI 会自动 commit / push，并由飞书机器人回传内容。\n"
+            "3. 若需要修改代码，照常改代码；同时可将说明性结论写入上述 md 文件。\n"
+            "4. 分支名必须与用户给定完全一致，不要臆造或拼错分支。\n"
+        )

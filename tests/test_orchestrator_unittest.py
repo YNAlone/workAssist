@@ -1,13 +1,17 @@
+import dataclasses
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from feishu_claude_automation.config import Settings
 from feishu_claude_automation.llm import IntentResult, LLMClient, extract_json_object
+from feishu_claude_automation.github import GitHubClient
 from feishu_claude_automation.models import (
     ConversationSession,
     RiskLevel,
+    Task,
     TaskMode,
     TaskRequest,
     TaskStatus,
@@ -255,6 +259,57 @@ class OrchestratorTests(unittest.TestCase):
         task = orchestrator.get_task(result["task_id"])
         assert task is not None
         self.assertEqual(task.status, TaskStatus.DISPATCHED)
+
+
+    def test_runner_callback_delivers_report_markdown_dry_run(self) -> None:
+        settings = dataclasses.replace(
+            self.settings,
+            feishu_bot_webhook="https://example.invalid/feishu-hook",
+        )
+        orchestrator = Orchestrator(settings)
+        task = orchestrator.create_task(
+            TaskRequest(
+                repo="acme/demo",
+                prompt="分析模块边界",
+                base_branch="main",
+                requester_id="u1",
+                chat_id="c_report",
+                message_id="m_report",
+            )
+        )
+        report_body = "# 分析结论\n模块划分清晰。"
+        with patch.object(orchestrator, "_reply_text", wraps=orchestrator._reply_text) as reply_mock:
+            updated = orchestrator.handle_runner_callback(
+                {
+                    "job_id": task.id,
+                    "status": "completed",
+                    "summary": "分析完成",
+                    "report_markdown": report_body,
+                    "report_path": f"docs/analysis-{task.id}.md",
+                }
+            )
+        reply_mock.assert_called_once()
+        chat_id, text, message_id = reply_mock.call_args[0]
+        self.assertEqual(chat_id, "c_report")
+        self.assertEqual(message_id, "m_report")
+        self.assertIn("模块划分清晰", text)
+        self.assertEqual(updated.status, TaskStatus.PR_CREATED)
+        self.assertEqual(updated.summary, "分析完成")
+
+    def test_github_wrap_prompt_includes_analysis_md(self) -> None:
+        task = Task(
+            id="job-42",
+            repo="acme/demo",
+            prompt="请分析架构",
+            base_branch="main",
+            work_branch="ai/test",
+            requester_id="u1",
+            chat_id="c1",
+            status=TaskStatus.DISPATCHED,
+            risk_level=RiskLevel.LOW,
+        )
+        wrapped = GitHubClient._wrap_prompt(task)
+        self.assertIn("docs/analysis-job-42.md", wrapped)
 
     def test_intent_result_invalid_action_falls_back(self) -> None:
         intent = IntentResult.from_dict({"action": "unknown", "reply_to_user": "hi"})

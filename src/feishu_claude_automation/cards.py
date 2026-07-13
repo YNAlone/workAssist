@@ -43,10 +43,12 @@ def build_task_card(task: Task) -> dict:
             }
         )
     if task.summary:
+        # Feishu card field is limited; keep card short and put full report in chat reply.
+        summary_preview = task.summary if len(task.summary) <= 500 else task.summary[:500] + "…"
         elements.append(
             {
                 "tag": "div",
-                "text": {"tag": "lark_md", "content": f"**摘要**: {task.summary}"},
+                "text": {"tag": "lark_md", "content": f"**摘要**: {summary_preview}"},
             }
         )
     if task.error:

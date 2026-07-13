@@ -56,6 +56,7 @@ jobs:
           ref: ${{ inputs.work_branch }}
 
       - name: Run Claude Code
+        id: claude
         uses: anthropics/claude-code-action@v1
         env:
           ANTHROPIC_BASE_URL: https://api.kimi.com/coding/
@@ -64,11 +65,45 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           show_full_output: true
-          prompt: ${{ inputs.prompt }}
+          prompt: |
+            ${{ inputs.prompt }}
+
+            ---
+            ## 输出约束（必须遵守）
+            1. 若本任务主要是分析 / 说明 / 问答，且不需要修改业务代码，请把完整结论写入 `docs/analysis-${{ inputs.job_id }}.md`（Markdown 中文），不要只在对话中回复。
+            2. 写入该文件后保存；后续步骤会自动 commit / push，并由飞书机器人回传内容。
+            3. 若需要修改代码，照常改代码；同时可将说明性结论写入上述 md 文件。
+            4. 分支名必须与用户给定完全一致，不要臆造或拼错分支。
           claude_args: |
             --max-turns 20
             --model kimi-for-coding
             --allowedTools Edit,Read,Write,Bash
+
+      - name: Locate analysis report
+        id: report
+        run: |
+          set -euo pipefail
+          JOB_ID="${{ inputs.job_id }}"
+          TARGET="docs/analysis-${JOB_ID}.md"
+          REPORT=""
+          if [ -f "$TARGET" ]; then
+            REPORT="$TARGET"
+          else
+            # Prefer any new/untracked analysis markdown Claude may have created.
+            CANDIDATE=$(git ls-files --others --exclude-standard 'docs/analysis-*.md' 2>/dev/null | head -n 1 || true)
+            if [ -z "$CANDIDATE" ]; then
+              CANDIDATE=$(ls -1t docs/analysis-*.md 2>/dev/null | head -n 1 || true)
+            fi
+            if [ -n "$CANDIDATE" ] && [ -f "$CANDIDATE" ]; then
+              REPORT="$CANDIDATE"
+            fi
+          fi
+          echo "report_path=${REPORT}" >> "$GITHUB_OUTPUT"
+          if [ -n "$REPORT" ]; then
+            echo "Found analysis report: $REPORT"
+          else
+            echo "No analysis markdown found yet"
+          fi
 
       - name: Commit and push
         id: commit
@@ -138,26 +173,71 @@ jobs:
           PR_URL=$(gh pr list --head "${{ inputs.work_branch }}" --base "${{ inputs.base_branch }}" --json url --jq '.[0].url // empty')
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Notify PR created
-        if: ${{ success() && inputs.mode != 'iterate' && steps.commit.outputs.no_changes != 'true' }}
+      - name: Notify success with report
+        if: ${{ success() }}
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          JOB_ID: ${{ inputs.job_id }}
+          MODE: ${{ inputs.mode }}
+          NO_CHANGES: ${{ steps.commit.outputs.no_changes }}
+          PR_URL: ${{ steps.pr.outputs.url || steps.existing_pr.outputs.url }}
+          REPORT_PATH: ${{ steps.report.outputs.report_path }}
+          WORK_BRANCH: ${{ inputs.work_branch }}
+          REPO: ${{ github.repository }}
         run: |
-          curl -sS -X POST "${{ inputs.callback_url }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"pr_created\",\"pr_url\":\"${{ steps.pr.outputs.url }}\",\"summary\":\"Pull request created\"}"
+          python3 <<'PY'
+          import json, os, pathlib, urllib.request
 
-      - name: Notify analysis completed
-        if: ${{ success() && steps.commit.outputs.no_changes == 'true' }}
-        run: |
-          curl -sS -X POST "${{ inputs.callback_url }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"completed\",\"summary\":\"任务完成但未产生代码改动（多为分析/问答）。详细结论请查看 GitHub Actions 日志。\",\"pr_url\":\"https://github.com/${{ github.repository }}/actions\"}"
+          job_id = os.environ["JOB_ID"]
+          no_changes = os.environ.get("NO_CHANGES", "false") == "true"
+          pr_url = os.environ.get("PR_URL") or ""
+          report_path = os.environ.get("REPORT_PATH") or ""
+          work_branch = os.environ.get("WORK_BRANCH") or ""
+          repo = os.environ.get("REPO") or ""
+          mode = os.environ.get("MODE") or "create"
 
-      - name: Notify branch updated
-        if: ${{ success() && inputs.mode == 'iterate' && steps.commit.outputs.no_changes != 'true' }}
-        run: |
-          curl -sS -X POST "${{ inputs.callback_url }}" \
-            -H "Content-Type: application/json" \
-            -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"pr_created\",\"pr_url\":\"${{ steps.existing_pr.outputs.url }}\",\"summary\":\"Branch updated on existing PR\"}"
+          report_text = ""
+          report_url = ""
+          if report_path and pathlib.Path(report_path).is_file():
+              report_text = pathlib.Path(report_path).read_text(encoding="utf-8", errors="replace")
+              report_url = f"https://github.com/{repo}/blob/{work_branch}/{report_path}"
+
+          if no_changes and not report_text:
+              status = "completed"
+              summary = "任务完成但未生成分析文档或代码改动。请明确要求写入 docs/analysis-*.md 后重试。"
+          elif no_changes and report_text:
+              # Should be rare: file exists but somehow not committed
+              status = "completed"
+              summary = "分析已完成（未推送代码变更）。"
+          elif mode == "iterate":
+              status = "pr_created"
+              summary = "Branch updated on existing PR"
+          else:
+              status = "pr_created"
+              summary = "Pull request created" if pr_url else "变更已推送"
+
+          if report_text and not summary.startswith("分析"):
+              summary = "分析报告已生成" if report_path else summary
+
+          payload = {
+              "job_id": job_id,
+              "status": status,
+              "pr_url": pr_url or report_url,
+              "summary": summary,
+              "report_path": report_path,
+              "report_url": report_url,
+              "report_markdown": report_text[:12000],
+          }
+          data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+          req = urllib.request.Request(
+              os.environ["CALLBACK_URL"],
+              data=data,
+              headers={"Content-Type": "application/json; charset=utf-8"},
+              method="POST",
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              print(resp.read().decode("utf-8", errors="replace"))
+          PY
 
       - name: Notify failure
         if: failure()

@@ -170,6 +170,14 @@ class Orchestrator:
         task.commit_sha = payload.get("commit_sha", task.commit_sha)
         task.error = payload.get("error", "")
 
+        report_markdown = str(payload.get("report_markdown") or "")
+        report_url = str(payload.get("report_url") or "")
+        report_path = str(payload.get("report_path") or "")
+        if report_url and not task.summary:
+            task.summary = f"分析报告：{report_url}"
+        elif report_path and report_url:
+            task.summary = payload.get("summary") or f"分析报告已生成：{report_path}"
+
         if status == "running":
             task.status = TaskStatus.RUNNING
             session_status = SessionStatus.RUNNING
@@ -187,7 +195,46 @@ class Orchestrator:
         if session_status is not None:
             self._sync_session_from_task(task, session_status)
         self._notify(task)
+        if status in {"pr_created", "updated", "completed", "succeeded"} and (
+            report_markdown or report_url
+        ):
+            self._deliver_report_to_feishu(
+                task,
+                report_markdown=report_markdown,
+                report_url=report_url,
+                report_path=report_path,
+            )
         return task
+
+    def _deliver_report_to_feishu(
+        self,
+        task: Task,
+        *,
+        report_markdown: str,
+        report_url: str,
+        report_path: str,
+    ) -> None:
+        """Send analysis markdown back to the Feishu chat as a conversational reply."""
+        if not task.chat_id:
+            return
+        limit = 3500
+        body = (report_markdown or "").strip()
+        header_parts = ["## 分析结论"]
+        if report_path:
+            header_parts.append(f"文件：`{report_path}`")
+        if report_url:
+            header_parts.append(f"完整文档：[打开]({report_url})")
+        if task.pr_url and task.pr_url != report_url:
+            header_parts.append(f"PR：[{task.pr_url}]({task.pr_url})")
+        header = "\n".join(header_parts) + "\n\n"
+        if not body:
+            text = header + (task.summary or "任务已完成。")
+        elif len(header) + len(body) <= limit:
+            text = header + body
+        else:
+            remain = max(0, limit - len(header) - 40)
+            text = header + body[:remain] + "\n\n…（内容过长已截断，请打开完整文档查看）"
+        self._reply_text(task.chat_id, text, task.message_id)
 
     def _extract_verification_token(self, payload: dict) -> str:
         # Feishu url_verification uses top-level token; event schema 2.0 uses header.token.
