@@ -71,6 +71,7 @@ jobs:
             --allowedTools Edit,Read,Write,Bash
 
       - name: Commit and push
+        id: commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -81,20 +82,46 @@ jobs:
           git status --short
           echo "=== git diff ==="
           git diff --stat
+
+          WORK_BRANCH="${{ inputs.work_branch }}"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+          echo "no_changes=false" >> "$GITHUB_OUTPUT"
+
+          # Claude Code may already have committed+pushed. Only treat as
+          # "no file changes" when the work branch is also not ahead of base.
           if git diff --quiet && git diff --cached --quiet; then
-            echo "No changes to commit"
-            exit 1
+            echo "Working tree clean; checking whether Claude already pushed..."
+            git fetch origin "$WORK_BRANCH" "$BASE_BRANCH" || true
+            AHEAD=0
+            if git rev-parse --verify "origin/${WORK_BRANCH}" >/dev/null 2>&1; then
+              AHEAD=$(git rev-list --count "origin/${BASE_BRANCH}..origin/${WORK_BRANCH}" 2>/dev/null || echo 0)
+            fi
+            if [ "${AHEAD}" -gt 0 ]; then
+              echo "Remote ${WORK_BRANCH} is ${AHEAD} commit(s) ahead of ${BASE_BRANCH}; skipping local commit."
+              git checkout -B "$WORK_BRANCH" "origin/${WORK_BRANCH}" || true
+              exit 0
+            fi
+            echo "No file changes (analysis-only or empty run); skipping commit/PR."
+            echo "no_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
           git add -A
           git commit -m "feat: ${{ inputs.job_id }} automated change"
-          git push origin "${{ inputs.work_branch }}"
+          git push origin "$WORK_BRANCH"
 
       - name: Create pull request
         id: pr
-        if: ${{ inputs.mode != 'iterate' }}
+        if: ${{ inputs.mode != 'iterate' && steps.commit.outputs.no_changes != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
+          EXISTING=$(gh pr list --head "${{ inputs.work_branch }}" --base "${{ inputs.base_branch }}" --json url --jq '.[0].url // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "PR already exists: $EXISTING"
+            echo "url=$EXISTING" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           PR_URL=$(gh pr create \
             --base "${{ inputs.base_branch }}" \
             --head "${{ inputs.work_branch }}" \
@@ -104,7 +131,7 @@ jobs:
 
       - name: Find existing pull request
         id: existing_pr
-        if: ${{ inputs.mode == 'iterate' }}
+        if: ${{ inputs.mode == 'iterate' && steps.commit.outputs.no_changes != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
@@ -112,14 +139,21 @@ jobs:
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Notify PR created
-        if: ${{ success() && inputs.mode != 'iterate' }}
+        if: ${{ success() && inputs.mode != 'iterate' && steps.commit.outputs.no_changes != 'true' }}
         run: |
           curl -sS -X POST "${{ inputs.callback_url }}" \
             -H "Content-Type: application/json" \
             -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"pr_created\",\"pr_url\":\"${{ steps.pr.outputs.url }}\",\"summary\":\"Pull request created\"}"
 
+      - name: Notify analysis completed
+        if: ${{ success() && steps.commit.outputs.no_changes == 'true' }}
+        run: |
+          curl -sS -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"completed\",\"summary\":\"任务完成但未产生代码改动（多为分析/问答）。详细结论请查看 GitHub Actions 日志。\",\"pr_url\":\"https://github.com/${{ github.repository }}/actions\"}"
+
       - name: Notify branch updated
-        if: ${{ success() && inputs.mode == 'iterate' }}
+        if: ${{ success() && inputs.mode == 'iterate' && steps.commit.outputs.no_changes != 'true' }}
         run: |
           curl -sS -X POST "${{ inputs.callback_url }}" \
             -H "Content-Type: application/json" \
