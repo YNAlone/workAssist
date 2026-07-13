@@ -1,0 +1,21 @@
+{
+  "agents": [
+    {
+      "id": "code",
+      "kind": "code",
+      "display_name": "代码助手",
+      "feishu_app_id_env": "FEISHU_CODE_APP_ID",
+      "executor": "github_actions",
+      "policy_ref": "code_policy"
+    },
+    {
+      "id": "doc",
+      "kind": "doc",
+      "display_name": "文档助手",
+      "feishu_app_id_env": "FEISHU_DOC_APP_ID",
+      "executor": "feishu_mcp",
+      "allowed_tools": ["fetch-doc", "update-doc", "create-doc", "search-doc"],
+      "policy_ref": "doc_policy"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 from .audit import AuditLogger
@@ -256,6 +257,16 @@ class Orchestrator:
                 task = self.approve_task(session.current_task_id, requester_id)
                 self._reply_text(chat_id, "已批准，开始执行。", message_id)
                 return {"session_id": session.id, "task_id": task.id, "status": task.status.value}
+
+        if session.status == SessionStatus.AWAITING_CONFIRM and looks_like_confirmation(cleaned):
+            task = self.confirm_session_execute(session.id, requester_id)
+            self._reply_text(chat_id, "已确认，开始执行。", message_id)
+            return {
+                "session_id": session.id,
+                "task_id": task.id,
+                "status": task.status.value,
+                "action": "execute",
+            }
 
         if looks_like_cancel(cleaned) and session.status != SessionStatus.CLOSED:
             if session.current_task_id:
@@ -534,12 +545,33 @@ class Orchestrator:
         if not self.feishu.verify_token(self._extract_verification_token(payload)):
             raise PolicyError("Invalid Feishu verification token")
 
-        action = payload.get("action", {})
-        value = action.get("value", {})
+        # Feishu card callback schema 2.0 nests action under event.*;
+        # older payloads may put action at the top level.
+        event_body = payload.get("event") if isinstance(payload.get("event"), dict) else {}
+        action = event_body.get("action") if isinstance(event_body.get("action"), dict) else {}
+        if not action:
+            action = payload.get("action") if isinstance(payload.get("action"), dict) else {}
+
+        raw_value = action.get("value", {})
+        if isinstance(raw_value, str):
+            try:
+                value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = {"action": raw_value}
+        elif isinstance(raw_value, dict):
+            value = raw_value
+        else:
+            value = {}
+
         action_name = value.get("action")
         task_id = value.get("task_id")
         session_id = value.get("session_id")
-        operator = action.get("operator", {}).get("open_id", "")
+        operator = (
+            (event_body.get("operator") or {}).get("open_id")
+            or (action.get("operator") or {}).get("open_id")
+            or (payload.get("operator") or {}).get("open_id")
+            or ""
+        )
 
         if action_name == "approve":
             task = self.approve_task(task_id, operator)
@@ -558,7 +590,7 @@ class Orchestrator:
             self._reply_text(session.chat_id, "已取消会话。")
             return {"session_id": session.id, "status": session.status.value}
 
-        return {"ignored": True, "action": action_name}
+        return {"ignored": True, "action": action_name, "value_keys": sorted(value.keys())}
 
     def _sync_session_from_task(self, task: Task, status: SessionStatus) -> None:
         if not task.session_id:

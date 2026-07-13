@@ -81,13 +81,32 @@ jobs:
           git status --short
           echo "=== git diff ==="
           git diff --stat
+
+          WORK_BRANCH="${{ inputs.work_branch }}"
+          BASE_BRANCH="${{ inputs.base_branch }}"
+
+          # Claude Code may already have committed+pushed. Only fail when
+          # there are truly no local changes AND the work branch has no
+          # commits ahead of the base branch.
           if git diff --quiet && git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "Working tree clean; checking whether Claude already pushed..."
+            git fetch origin "$WORK_BRANCH" "$BASE_BRANCH" || true
+            AHEAD=0
+            if git rev-parse --verify "origin/${WORK_BRANCH}" >/dev/null 2>&1; then
+              AHEAD=$(git rev-list --count "origin/${BASE_BRANCH}..origin/${WORK_BRANCH}" 2>/dev/null || echo 0)
+            fi
+            if [ "${AHEAD}" -gt 0 ]; then
+              echo "Remote ${WORK_BRANCH} is ${AHEAD} commit(s) ahead of ${BASE_BRANCH}; skipping local commit."
+              git checkout -B "$WORK_BRANCH" "origin/${WORK_BRANCH}" || true
+              exit 0
+            fi
+            echo "No changes to commit and work branch is not ahead of base"
             exit 1
           fi
+
           git add -A
           git commit -m "feat: ${{ inputs.job_id }} automated change"
-          git push origin "${{ inputs.work_branch }}"
+          git push origin "$WORK_BRANCH"
 
       - name: Create pull request
         id: pr
@@ -95,6 +114,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
+          EXISTING=$(gh pr list --head "${{ inputs.work_branch }}" --base "${{ inputs.base_branch }}" --json url --jq '.[0].url // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "PR already exists: $EXISTING"
+            echo "url=$EXISTING" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           PR_URL=$(gh pr create \
             --base "${{ inputs.base_branch }}" \
             --head "${{ inputs.work_branch }}" \

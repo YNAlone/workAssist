@@ -233,6 +233,50 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(iter_task.work_branch, "devTT")
         self.assertEqual(iter_task.parent_task_id, task.id)
 
+    def test_card_action_schema_v2(self) -> None:
+        orchestrator = Orchestrator(self.settings)
+        first = orchestrator.handle_feishu_message(
+            {
+                "header": {"event_type": "im.message.receive_v1", "token": "token"},
+                "event": {
+                    "sender": {"sender_id": {"open_id": "u1"}},
+                    "message": {
+                        "chat_id": "c_card_v2",
+                        "message_id": "m1",
+                        "content": json.dumps(
+                            {
+                                "text": "帮我在 workAssist 项目中基于 dev_test 创建一个 cardV2 分支，然后新增登录功能"
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                },
+            }
+        )
+        self.assertEqual(first.get("action"), "confirm_plan")
+        session_id = first["session_id"]
+
+        # Feishu card.action.trigger schema 2.0 nests action under event.
+        confirm = orchestrator.handle_card_action(
+            {
+                "schema": "2.0",
+                "header": {"event_type": "card.action.trigger", "token": "token"},
+                "event": {
+                    "operator": {"open_id": "u1"},
+                    "action": {
+                        "tag": "button",
+                        "value": {"action": "confirm_execute", "session_id": session_id},
+                    },
+                },
+            }
+        )
+        self.assertIn("task_id", confirm)
+        self.assertNotEqual(confirm.get("ignored"), True)
+        task = orchestrator.get_task(confirm["task_id"])
+        assert task is not None
+        self.assertEqual(task.status, TaskStatus.DISPATCHED)
+        self.assertEqual(task.work_branch, "cardV2")
+
     def test_ai_fix_command_still_works(self) -> None:
         orchestrator = Orchestrator(self.settings)
         result = orchestrator.handle_feishu_message(

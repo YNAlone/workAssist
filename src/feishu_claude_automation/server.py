@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from agent_platform.app import PlatformApp, build_platform_app
+from agent_platform.errors import PlatformError
+
 from .config import Settings
 from .orchestrator import Orchestrator
 from .policy import PolicyError
@@ -15,6 +18,7 @@ from .policy import PolicyError
 
 class AutomationHandler(BaseHTTPRequestHandler):
     orchestrator: Orchestrator
+    platform: PlatformApp | None = None
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -31,7 +35,13 @@ class AutomationHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _log_request(self, path: str, payload: dict[str, Any], result: dict[str, Any] | None = None, error: str = "") -> None:
+    def _log_request(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        result: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
         log_path = Path(self.orchestrator.settings.audit_log_path).parent / "requests.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         entry = {
@@ -52,7 +62,21 @@ class AutomationHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/health":
-            self._send_json(HTTPStatus.OK, {"status": "ok"})
+            payload: dict[str, Any] = {"status": "ok"}
+            if self.platform is not None:
+                payload.update(self.platform.health())
+            self._send_json(HTTPStatus.OK, payload)
+            return
+        if path.startswith("/v1/jobs/"):
+            if self.platform is None:
+                self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "platform not enabled"})
+                return
+            job_id = path.split("/v1/jobs/", 1)[1].strip("/")
+            try:
+                result = self.platform.orchestra.get_job_bundle(job_id)
+                self._send_json(HTTPStatus.OK, result)
+            except PlatformError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
             return
         if path.startswith("/tasks/"):
             task_id = path.split("/tasks/", 1)[1]
@@ -80,7 +104,40 @@ class AutomationHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, result)
                 return
             if path == "/callbacks/runner":
+                if self.platform is not None:
+                    try:
+                        task = self.platform.bus.apply_callback(payload)
+                        result = {"task_id": task.id, "status": task.status.value, "via": "platform"}
+                        self._log_request(path, payload, result=result)
+                        self._send_json(HTTPStatus.OK, result)
+                        return
+                    except PlatformError:
+                        pass
                 task = self.orchestrator.handle_runner_callback(payload)
+                result = {"task_id": task.id, "status": task.status.value, "via": "legacy"}
+                self._log_request(path, payload, result=result)
+                self._send_json(HTTPStatus.OK, result)
+                return
+            if path == "/v1/jobs":
+                if self.platform is None:
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "platform not enabled"})
+                    return
+                result = self.platform.orchestra.create_and_dispatch(
+                    goal=str(payload.get("goal") or ""),
+                    requester_id=str(payload.get("requester_id") or ""),
+                    chat_id=str(payload.get("chat_id") or ""),
+                    agent_id=str(payload.get("agent_id") or ""),
+                    inputs=payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {},
+                    auto_dispatch=bool(payload.get("auto_dispatch", True)),
+                )
+                self._log_request(path, payload, result={"job_id": result["job"]["id"]})
+                self._send_json(HTTPStatus.CREATED, result)
+                return
+            if path == "/v1/tasks/callback":
+                if self.platform is None:
+                    self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "platform not enabled"})
+                    return
+                task = self.platform.bus.apply_callback(payload)
                 result = {"task_id": task.id, "status": task.status.value}
                 self._log_request(path, payload, result=result)
                 self._send_json(HTTPStatus.OK, result)
@@ -105,6 +162,9 @@ class AutomationHandler(BaseHTTPRequestHandler):
         except PolicyError as exc:
             self._log_request(path, payload, error=str(exc))
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except PlatformError as exc:
+            self._log_request(path, payload, error=str(exc))
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         except KeyError as exc:
             self._log_request(path, payload, error=f"missing field: {exc.args[0]}")
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": f"missing field: {exc.args[0]}"})
@@ -116,11 +176,19 @@ class AutomationHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
 
-def create_server(settings: Settings | None = None) -> ThreadingHTTPServer:
+def create_server(settings: Settings | None = None, *, enable_platform: bool = True) -> ThreadingHTTPServer:
     settings = settings or Settings.from_env()
     orchestrator = Orchestrator(settings)
+    platform_app: PlatformApp | None = None
+    if enable_platform:
+        try:
+            platform_app = build_platform_app(settings)
+        except Exception as exc:  # noqa: BLE001
+            print(f"warning: platform disabled ({exc})")
+            platform_app = None
     handler = type("ConfiguredAutomationHandler", (AutomationHandler,), {})
     handler.orchestrator = orchestrator
+    handler.platform = platform_app
     return ThreadingHTTPServer((settings.host, settings.port), handler)
 
 
@@ -128,6 +196,8 @@ def main() -> None:
     settings = Settings.from_env()
     server = create_server(settings)
     print(f"feishu-claude orchestrator listening on {settings.host}:{settings.port}")
+    if getattr(server.RequestHandlerClass, "platform", None) is not None:
+        print("platform API enabled: POST /v1/jobs, GET /v1/jobs/{id}")
     server.serve_forever()
 
 

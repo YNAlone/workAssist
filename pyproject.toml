@@ -1,9 +1,16 @@
 [project]
 name = "claude-feishu-automation"
-version = "0.1.0"
-description = "Feishu-driven Claude code automation orchestrator"
+version = "0.2.0"
+description = "Multi-agent Feishu orchestration platform (code + docs)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "sqlalchemy>=2.0",
+  "alembic>=1.13",
+  "psycopg[binary]>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
 
 [project.scripts]
 feishu-claude-orchestrator = "feishu_claude_automation.server:main"
