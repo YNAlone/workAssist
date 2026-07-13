@@ -174,8 +174,10 @@ class Orchestrator:
         if status == "running":
             task.status = TaskStatus.RUNNING
             session_status = SessionStatus.RUNNING
-        elif status in {"pr_created", "updated"}:
+        elif status in {"pr_created", "updated", "completed", "succeeded"}:
             task.status = TaskStatus.PR_CREATED
+            if status in {"completed", "succeeded"} and not payload.get("pr_url"):
+                task.summary = payload.get("summary") or task.summary or "Completed without code changes"
             session_status = SessionStatus.AWAITING_FEEDBACK
         elif status == "failed":
             task.status = TaskStatus.FAILED

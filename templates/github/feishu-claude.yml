@@ -71,6 +71,7 @@ jobs:
             --allowedTools Edit,Read,Write,Bash
 
       - name: Commit and push
+        id: commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -84,10 +85,10 @@ jobs:
 
           WORK_BRANCH="${{ inputs.work_branch }}"
           BASE_BRANCH="${{ inputs.base_branch }}"
+          echo "no_changes=false" >> "$GITHUB_OUTPUT"
 
-          # Claude Code may already have committed+pushed. Only fail when
-          # there are truly no local changes AND the work branch has no
-          # commits ahead of the base branch.
+          # Claude Code may already have committed+pushed. Only treat as
+          # "no file changes" when the work branch is also not ahead of base.
           if git diff --quiet && git diff --cached --quiet; then
             echo "Working tree clean; checking whether Claude already pushed..."
             git fetch origin "$WORK_BRANCH" "$BASE_BRANCH" || true
@@ -100,8 +101,9 @@ jobs:
               git checkout -B "$WORK_BRANCH" "origin/${WORK_BRANCH}" || true
               exit 0
             fi
-            echo "No changes to commit and work branch is not ahead of base"
-            exit 1
+            echo "No file changes (analysis-only or empty run); skipping commit/PR."
+            echo "no_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           git add -A
@@ -110,7 +112,7 @@ jobs:
 
       - name: Create pull request
         id: pr
-        if: ${{ inputs.mode != 'iterate' }}
+        if: ${{ inputs.mode != 'iterate' && steps.commit.outputs.no_changes != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
@@ -129,7 +131,7 @@ jobs:
 
       - name: Find existing pull request
         id: existing_pr
-        if: ${{ inputs.mode == 'iterate' }}
+        if: ${{ inputs.mode == 'iterate' && steps.commit.outputs.no_changes != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
@@ -137,14 +139,21 @@ jobs:
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Notify PR created
-        if: ${{ success() && inputs.mode != 'iterate' }}
+        if: ${{ success() && inputs.mode != 'iterate' && steps.commit.outputs.no_changes != 'true' }}
         run: |
           curl -sS -X POST "${{ inputs.callback_url }}" \
             -H "Content-Type: application/json" \
             -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"pr_created\",\"pr_url\":\"${{ steps.pr.outputs.url }}\",\"summary\":\"Pull request created\"}"
 
+      - name: Notify analysis completed
+        if: ${{ success() && steps.commit.outputs.no_changes == 'true' }}
+        run: |
+          curl -sS -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"job_id\":\"${{ inputs.job_id }}\",\"status\":\"completed\",\"summary\":\"任务完成但未产生代码改动（多为分析/问答）。详细结论请查看 GitHub Actions 日志。\",\"pr_url\":\"https://github.com/${{ github.repository }}/actions\"}"
+
       - name: Notify branch updated
-        if: ${{ success() && inputs.mode == 'iterate' }}
+        if: ${{ success() && inputs.mode == 'iterate' && steps.commit.outputs.no_changes != 'true' }}
         run: |
           curl -sS -X POST "${{ inputs.callback_url }}" \
             -H "Content-Type: application/json" \
