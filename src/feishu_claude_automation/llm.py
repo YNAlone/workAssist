@@ -60,7 +60,7 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
 {
   "action": "clarify|confirm_plan|execute|iterate|cancel|chitchat",
   "repo": "owner/repo 或短名",
-  "base_branch": "基线分支，默认 main",
+  "base_branch": "用户明确指定的基线分支，未指定则留空",
   "work_branch_hint": "用户指定的工作分支名，可空",
   "prompt": "给 Claude Code 的完整执行说明",
   "reply_to_user": "给用户的中文回复",
@@ -69,13 +69,14 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
 }
 
 规则：
-1. 新需求缺仓库或具体改动描述时用 clarify，并在 reply_to_user 追问。
+1. 新需求缺仓库、基线分支或具体改动描述时用 clarify，并在 reply_to_user 追问。
 2. 信息齐全、尚未确认执行时用 confirm_plan，reply 中简述计划。
 3. 用户明确确认（确认/执行/开始吧）且计划齐全时用 execute。
 4. 已有 PR/工作分支后，用户要求继续改用 iterate，prompt 写本轮增量。
 5. 用户取消用 cancel；闲聊/问能力用 chitchat。
 6. 仅使用 allowed_repos 中的仓库；用户说短名时填短名或完整名均可。
-7. 不要编造未提供的需求细节。
+7. base_branch 必须来自用户明确指定（如「基于 dev_test」「从 main 开分支」）；不要默认填 main 或其他分支。未指定时 missing_fields 加入 base_branch 并追问。
+8. 不要编造未提供的需求细节。
 """
 
 
@@ -121,8 +122,9 @@ class LLMClient:
                 "content": json.dumps(
                     {
                         "allowed_repos": allowed_repos,
-                        "default_base_branch": default_base_branch,
-                        "session": {
+                "default_base_branch": "",
+                "note": "base_branch must be explicitly provided by the user; do not invent a default",
+                "session": {
                             "status": session.status.value,
                             "repo": session.repo,
                             "base_branch": session.base_branch,
@@ -143,7 +145,8 @@ class LLMClient:
 
         payload = {
             "model": self.settings.orch_llm_model,
-            "temperature": 0.2,
+            # kimi-for-coding only accepts temperature=1
+            "temperature": 1,
             "messages": messages,
         }
         raw = self._chat_completions(payload)
@@ -251,6 +254,15 @@ class LLMClient:
                 break
 
         work_hint = session.work_branch
+        base_branch = session.base_branch
+        base_match = re.search(
+            r"(?:基于|从|base(?:\s*branch)?\s*[:=]?)\s*[「\"']?([A-Za-z0-9._/-]+)[」\"']?",
+            text,
+            re.IGNORECASE,
+        )
+        if base_match:
+            base_branch = base_match.group(1)
+
         branch_match = re.search(
             r"(?:分支|branch)\s*[「\"']?([A-Za-z0-9._/-]+)[」\"']?",
             text,
@@ -271,7 +283,9 @@ class LLMClient:
                     text,
                 )
                 if named_branch:
-                    work_hint = named_branch.group(1)
+                    candidate = named_branch.group(1)
+                    if candidate != base_branch:
+                        work_hint = candidate
 
         prompt = session.prompt
         if "功能" in text or "修复" in text or "新增" in text or "fix" in lowered or len(text) > 15:
@@ -280,6 +294,8 @@ class LLMClient:
         missing: list[str] = []
         if not repo:
             missing.append("repo")
+        if not base_branch:
+            missing.append("base_branch")
         if not prompt:
             missing.append("prompt")
 
@@ -287,12 +303,14 @@ class LLMClient:
             ask = []
             if "repo" in missing:
                 ask.append(f"请指定仓库（可选：{', '.join(allowed_repos) or 'owner/repo'}）")
+            if "base_branch" in missing:
+                ask.append("请指定基于哪个已有分支开发（例如 dev_test）")
             if "prompt" in missing:
                 ask.append("请描述要做的具体改动")
             return IntentResult(
                 action="clarify",
                 repo=repo,
-                base_branch=session.base_branch or "main",
+                base_branch=base_branch,
                 work_branch_hint=work_hint,
                 prompt=prompt,
                 reply_to_user="；".join(ask) + "。",
@@ -303,7 +321,7 @@ class LLMClient:
         return IntentResult(
             action="confirm_plan",
             repo=repo,
-            base_branch=session.base_branch or "main",
+            base_branch=base_branch,
             work_branch_hint=work_hint,
             prompt=prompt,
             reply_to_user="计划已整理，请确认后开始执行。",

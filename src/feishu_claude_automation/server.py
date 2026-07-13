@@ -91,7 +91,7 @@ class AutomationHandler(BaseHTTPRequestHandler):
                 request = TaskRequest(
                     repo=payload["repo"],
                     prompt=payload["prompt"],
-                    base_branch=payload.get("base_branch", "main"),
+                    base_branch=payload.get("base_branch", ""),
                     requester_id=payload.get("requester_id", ""),
                     chat_id=payload.get("chat_id", ""),
                     issue=payload.get("issue", ""),

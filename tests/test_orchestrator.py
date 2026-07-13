@@ -22,7 +22,7 @@ def settings(tmp_path: Path) -> Settings:
                 "require_approval_for_risk": ["high"],
                 "high_risk_keywords": ["delete"],
                 "max_concurrent_jobs": 2,
-                "default_base_branch": "main",
+                "default_base_branch": "",
                 "work_branch_prefix": "ai/feishu",
             }
         ),
@@ -40,6 +40,7 @@ def settings(tmp_path: Path) -> Settings:
         github_token="",
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
+        github_dispatch_ref="dev_test",
         policy_file=policy_file,
         task_store_path=tmp_path / "tasks.json",
         audit_log_path=tmp_path / "audit.log",
@@ -72,7 +73,13 @@ def test_resolve_repo_short_name(settings: Settings):
 def test_create_low_risk_task(settings: Settings):
     orchestrator = Orchestrator(settings)
     task = orchestrator.create_task(
-        TaskRequest(repo="acme/demo", prompt="Fix refund rounding bug", requester_id="u1", chat_id="c1")
+        TaskRequest(
+            repo="acme/demo",
+            prompt="Fix refund rounding bug",
+            base_branch="main",
+            requester_id="u1",
+            chat_id="c1",
+        )
     )
     assert task.status == TaskStatus.DISPATCHED
     assert task.work_branch.startswith("ai/feishu-")
@@ -82,7 +89,13 @@ def test_create_low_risk_task(settings: Settings):
 def test_high_risk_requires_approval(settings: Settings):
     orchestrator = Orchestrator(settings)
     task = orchestrator.create_task(
-        TaskRequest(repo="acme/demo", prompt="delete legacy module", requester_id="u1", chat_id="c1")
+        TaskRequest(
+            repo="acme/demo",
+            prompt="delete legacy module",
+            base_branch="main",
+            requester_id="u1",
+            chat_id="c1",
+        )
     )
     assert task.status == TaskStatus.PENDING_APPROVAL
 
@@ -90,7 +103,13 @@ def test_high_risk_requires_approval(settings: Settings):
 def test_runner_callback_updates_pr(settings: Settings):
     orchestrator = Orchestrator(settings)
     task = orchestrator.create_task(
-        TaskRequest(repo="acme/demo", prompt="Fix refund rounding bug", requester_id="u1", chat_id="c1")
+        TaskRequest(
+            repo="acme/demo",
+            prompt="Fix refund rounding bug",
+            base_branch="main",
+            requester_id="u1",
+            chat_id="c1",
+        )
     )
     updated = orchestrator.handle_runner_callback(
         {
@@ -115,7 +134,9 @@ def test_natural_language_confirm_and_iterate(settings: Settings):
                     "chat_id": "c1",
                     "message_id": "m1",
                     "content": json.dumps(
-                        {"text": "帮我在 workAssist 项目中创建一个 devTT 分支，然后新增登录功能"},
+                        {
+                            "text": "帮我在 workAssist 项目中基于 dev_test 创建一个 devTT 分支，然后新增登录功能"
+                        },
                         ensure_ascii=False,
                     ),
                 },
@@ -136,6 +157,7 @@ def test_natural_language_confirm_and_iterate(settings: Settings):
     )
     task = orchestrator.get_task(confirm["task_id"])
     assert task is not None
+    assert task.base_branch == "dev_test"
     assert task.work_branch == "devTT"
 
     orchestrator.handle_runner_callback(

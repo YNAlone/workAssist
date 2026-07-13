@@ -24,6 +24,7 @@ class Settings:
     github_token: str
     github_workflow_id: str
     github_api_base: str
+    github_dispatch_ref: str
     policy_file: Path
     task_store_path: Path
     audit_log_path: Path
@@ -48,6 +49,7 @@ class Settings:
             github_token=os.getenv("GITHUB_TOKEN", ""),
             github_workflow_id=os.getenv("GITHUB_WORKFLOW_ID", "feishu-claude.yml"),
             github_api_base=os.getenv("GITHUB_API_BASE", "https://api.github.com"),
+            github_dispatch_ref=os.getenv("GITHUB_DISPATCH_REF", ""),
             policy_file=Path(os.getenv("POLICY_FILE", root / "config/policy.example.json")),
             task_store_path=Path(os.getenv("TASK_STORE_PATH", root / "data/tasks.json")),
             audit_log_path=Path(os.getenv("AUDIT_LOG_PATH", root / "data/audit.log")),

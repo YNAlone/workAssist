@@ -47,7 +47,7 @@ def utc_now() -> str:
 class TaskRequest:
     repo: str
     prompt: str
-    base_branch: str = "main"
+    base_branch: str = ""
     requester_id: str = ""
     chat_id: str = ""
     message_id: str = ""
@@ -169,7 +169,7 @@ class ConversationSession:
     requester_id: str
     status: SessionStatus = SessionStatus.IDLE
     repo: str = ""
-    base_branch: str = "main"
+    base_branch: str = ""
     work_branch: str = ""
     prompt: str = ""
     current_task_id: str = ""
@@ -206,7 +206,7 @@ class ConversationSession:
             requester_id=data.get("requester_id", ""),
             status=SessionStatus(data.get("status", SessionStatus.IDLE.value)),
             repo=data.get("repo", ""),
-            base_branch=data.get("base_branch", "main"),
+            base_branch=data.get("base_branch", ""),
             work_branch=data.get("work_branch", ""),
             prompt=data.get("prompt", ""),
             current_task_id=data.get("current_task_id", ""),

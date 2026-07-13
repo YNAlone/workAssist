@@ -28,7 +28,7 @@ def build_settings(tmp_path: Path) -> Settings:
                 "require_approval_for_risk": ["high"],
                 "high_risk_keywords": ["delete"],
                 "max_concurrent_jobs": 2,
-                "default_base_branch": "main",
+                "default_base_branch": "",
                 "work_branch_prefix": "ai/feishu",
             }
         ),
@@ -46,6 +46,7 @@ def build_settings(tmp_path: Path) -> Settings:
         github_token="",
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
+        github_dispatch_ref="dev_test",
         policy_file=policy_file,
         task_store_path=tmp_path / "tasks.json",
         audit_log_path=tmp_path / "audit.log",
@@ -86,7 +87,13 @@ class OrchestratorTests(unittest.TestCase):
     def test_create_low_risk_task(self) -> None:
         orchestrator = Orchestrator(self.settings)
         task = orchestrator.create_task(
-            TaskRequest(repo="acme/demo", prompt="Fix refund rounding bug", requester_id="u1", chat_id="c1")
+            TaskRequest(
+                repo="acme/demo",
+                prompt="Fix refund rounding bug",
+                base_branch="main",
+                requester_id="u1",
+                chat_id="c1",
+            )
         )
         self.assertEqual(task.status, TaskStatus.DISPATCHED)
         self.assertTrue(task.work_branch.startswith("ai/feishu-"))
@@ -95,14 +102,26 @@ class OrchestratorTests(unittest.TestCase):
     def test_high_risk_requires_approval(self) -> None:
         orchestrator = Orchestrator(self.settings)
         task = orchestrator.create_task(
-            TaskRequest(repo="acme/demo", prompt="delete legacy module", requester_id="u1", chat_id="c1")
+            TaskRequest(
+                repo="acme/demo",
+                prompt="delete legacy module",
+                base_branch="main",
+                requester_id="u1",
+                chat_id="c1",
+            )
         )
         self.assertEqual(task.status, TaskStatus.PENDING_APPROVAL)
 
     def test_runner_callback_updates_pr(self) -> None:
         orchestrator = Orchestrator(self.settings)
         task = orchestrator.create_task(
-            TaskRequest(repo="acme/demo", prompt="Fix refund rounding bug", requester_id="u1", chat_id="c1")
+            TaskRequest(
+                repo="acme/demo",
+                prompt="Fix refund rounding bug",
+                base_branch="main",
+                requester_id="u1",
+                chat_id="c1",
+            )
         )
         updated = orchestrator.handle_runner_callback(
             {
@@ -123,15 +142,28 @@ class OrchestratorTests(unittest.TestCase):
         client = LLMClient(self.settings)
         session = ConversationSession.create(chat_id="c1", requester_id="u1")
         intent = client.interpret(
-            user_text="帮我在 workAssist 项目中创建一个 devTT 分支，然后新增登录功能",
+            user_text="帮我在 workAssist 项目中基于 dev_test 创建一个 devTT 分支，然后新增登录功能",
             session=session,
             allowed_repos=["YNAlone/workAssist"],
-            default_base_branch="main",
+            default_base_branch="",
         )
         self.assertEqual(intent.action, "confirm_plan")
         self.assertEqual(intent.repo, "YNAlone/workAssist")
+        self.assertEqual(intent.base_branch, "dev_test")
         self.assertEqual(intent.work_branch_hint, "devTT")
         self.assertTrue(intent.prompt)
+
+    def test_llm_mock_asks_base_branch(self) -> None:
+        client = LLMClient(self.settings)
+        session = ConversationSession.create(chat_id="c1", requester_id="u1")
+        intent = client.interpret(
+            user_text="帮我在 workAssist 项目中创建一个 devTT 分支，然后新增登录功能",
+            session=session,
+            allowed_repos=["YNAlone/workAssist"],
+            default_base_branch="",
+        )
+        self.assertEqual(intent.action, "clarify")
+        self.assertIn("base_branch", intent.missing_fields)
 
     def test_natural_language_flow_and_iterate(self) -> None:
         orchestrator = Orchestrator(self.settings)
@@ -145,7 +177,7 @@ class OrchestratorTests(unittest.TestCase):
                         "chat_id": "c1",
                         "message_id": "m1",
                         "content": json.dumps(
-                            {"text": "帮我在 workAssist 项目中创建一个 devTT 分支，然后新增登录功能"},
+                            {"text": "帮我在 workAssist 项目中基于 dev_test 创建一个 devTT 分支，然后新增登录功能"},
                             ensure_ascii=False,
                         ),
                     },
@@ -168,6 +200,7 @@ class OrchestratorTests(unittest.TestCase):
         task = orchestrator.get_task(confirm["task_id"])
         assert task is not None
         self.assertEqual(task.work_branch, "devTT")
+        self.assertEqual(task.base_branch, "dev_test")
         self.assertEqual(task.repo, "YNAlone/workAssist")
         self.assertEqual(task.status, TaskStatus.DISPATCHED)
 

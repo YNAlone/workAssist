@@ -31,13 +31,13 @@ def parse_command(text: str) -> TaskRequest | None:
 
     remaining = FIELD_PATTERN.sub("", body).strip()
     prompt = fields.get("desc") or remaining
-    if not fields.get("repo") or not prompt:
+    if not fields.get("repo") or not prompt or not fields.get("branch"):
         return None
 
     return TaskRequest(
         repo=fields["repo"],
         prompt=prompt,
-        base_branch=fields.get("branch", "main"),
+        base_branch=fields["branch"],
         requester_id=fields.get("requester", ""),
         chat_id=fields.get("chat", ""),
         issue=fields.get("issue", ""),

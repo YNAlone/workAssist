@@ -42,8 +42,8 @@ class Policy:
             raise PolicyError(f"Repository not allowed: {request.repo}")
         if self.allowed_requesters and request.requester_id not in self.allowed_requesters:
             raise PolicyError(f"Requester not allowed: {request.requester_id}")
-        if request.base_branch in self.protected_branches and request.base_branch != self.default_base_branch:
-            raise PolicyError(f"Base branch not permitted: {request.base_branch}")
+        if not (request.base_branch or "").strip():
+            raise PolicyError("Base branch is required")
 
     def classify_risk(self, prompt: str) -> RiskLevel:
         lowered = prompt.lower()

@@ -65,6 +65,7 @@ class Orchestrator:
     def create_task(self, request: TaskRequest) -> Task:
         if request.repo:
             request.repo = self.policy.resolve_repo(request.repo) or request.repo
+        request.base_branch = (request.base_branch or "").strip()
         self.policy.validate_request(request)
         if self._active_job_count() >= self.policy.max_concurrent_jobs:
             raise PolicyError("Too many active jobs")
@@ -270,12 +271,22 @@ class Orchestrator:
             self._reply_text(chat_id, "好的，已取消当前会话。", message_id)
             return {"session_id": session.id, "status": SessionStatus.CLOSED.value}
 
-        intent = self.llm.interpret(
-            user_text=cleaned,
-            session=session,
-            allowed_repos=self.policy.allowed_repos,
-            default_base_branch=self.policy.default_base_branch,
-        )
+        try:
+            intent = self.llm.interpret(
+                user_text=cleaned,
+                session=session,
+                allowed_repos=self.policy.allowed_repos,
+                default_base_branch=self.policy.default_base_branch,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.audit.record("llm.failed", error=str(exc), session_id=session.id)
+            self._reply_text(
+                chat_id,
+                f"意图解析失败，请稍后重试或改用 /ai-fix 命令。错误：{exc}",
+                message_id,
+            )
+            return {"session_id": session.id, "error": str(exc)}
+
         self._merge_intent_into_session(session, intent)
         session.append_message("user", cleaned)
         if intent.reply_to_user:
@@ -294,9 +305,7 @@ class Orchestrator:
         if intent.repo:
             session.repo = self.policy.resolve_repo(intent.repo) or intent.repo
         if intent.base_branch:
-            session.base_branch = intent.base_branch
-        elif not session.base_branch:
-            session.base_branch = self.policy.default_base_branch
+            session.base_branch = intent.base_branch.strip()
         if intent.work_branch_hint:
             session.work_branch = intent.work_branch_hint
         if intent.prompt:
@@ -320,8 +329,8 @@ class Orchestrator:
 
         if action == "chitchat":
             reply = intent.reply_to_user or (
-                "我可以帮你用自然语言改代码：说明仓库、分支和需求，确认后我会调度 Claude Code，"
-                "也可以在 PR 出来后继续说「再改一下」。也支持 /ai-fix 命令。"
+                "我可以帮你用自然语言改代码：请说明仓库、基于哪个已有分支、以及需求；"
+                "确认后我会调度 Claude Code。PR 出来后也可继续说「再改一下」。也支持 /ai-fix 命令。"
             )
             self._reply_text(chat_id, reply, message_id)
             session.status = SessionStatus.CLARIFYING if not session.repo else session.status
@@ -400,6 +409,8 @@ class Orchestrator:
         missing: list[str] = []
         if not session.repo:
             missing.append("repo")
+        if not session.base_branch:
+            missing.append("base_branch")
         if not session.prompt:
             missing.append("prompt")
         return missing
@@ -418,7 +429,7 @@ class Orchestrator:
         request = TaskRequest(
             repo=session.repo,
             prompt=prompt or session.prompt,
-            base_branch=session.base_branch or self.policy.default_base_branch,
+            base_branch=session.base_branch,
             requester_id=requester_id or session.requester_id,
             chat_id=session.chat_id,
             message_id=message_id,

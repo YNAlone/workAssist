@@ -39,8 +39,10 @@ class GitHubClient:
             f"{self.settings.github_api_base.rstrip('/')}/repos/"
             f"{owner}/{repo}/actions/workflows/{self.settings.github_workflow_id}/dispatches"
         )
+        # workflow YAML must exist on this ref; prefer explicit dispatch ref (e.g. default branch)
+        dispatch_ref = self.settings.github_dispatch_ref or task.base_branch
         payload = {
-            "ref": task.base_branch,
+            "ref": dispatch_ref,
             "inputs": {
                 "job_id": task.id,
                 "prompt": task.prompt,

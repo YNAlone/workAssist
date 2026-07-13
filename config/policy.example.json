@@ -17,6 +17,6 @@
     "remove all"
   ],
   "max_concurrent_jobs": 5,
-  "default_base_branch": "main",
+  "default_base_branch": "",
   "work_branch_prefix": "ai/dev"
 }
