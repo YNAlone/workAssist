@@ -109,6 +109,7 @@ jobs:
         id: commit
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          REPORT_PATH: ${{ steps.report.outputs.report_path }}
         run: |
           git config user.name "feishu-claude-bot"
           git config user.email "feishu-claude-bot@users.noreply.github.com"
@@ -121,6 +122,12 @@ jobs:
           WORK_BRANCH="${{ inputs.work_branch }}"
           BASE_BRANCH="${{ inputs.base_branch }}"
           echo "no_changes=false" >> "$GITHUB_OUTPUT"
+
+          # Untracked analysis markdown is invisible to `git diff`; stage it explicitly.
+          if [ -n "${REPORT_PATH}" ] && [ -f "${REPORT_PATH}" ]; then
+            git add "${REPORT_PATH}"
+            echo "Staged analysis report: ${REPORT_PATH}"
+          fi
 
           # Claude Code may already have committed+pushed. Only treat as
           # "no file changes" when the work branch is also not ahead of base.
@@ -200,15 +207,15 @@ jobs:
           report_url = ""
           if report_path and pathlib.Path(report_path).is_file():
               report_text = pathlib.Path(report_path).read_text(encoding="utf-8", errors="replace")
-              report_url = f"https://github.com/{repo}/blob/{work_branch}/{report_path}"
+              if not no_changes and work_branch:
+                  report_url = f"https://github.com/{repo}/blob/{work_branch}/{report_path}"
 
           if no_changes and not report_text:
               status = "completed"
               summary = "任务完成但未生成分析文档或代码改动。请明确要求写入 docs/analysis-*.md 后重试。"
           elif no_changes and report_text:
-              # Should be rare: file exists but somehow not committed
               status = "completed"
-              summary = "分析已完成（未推送代码变更）。"
+              summary = "分析已完成，结果将通过飞书云文档回传。"
           elif mode == "iterate":
               status = "pr_created"
               summary = "Branch updated on existing PR"
@@ -222,7 +229,7 @@ jobs:
           payload = {
               "job_id": job_id,
               "status": status,
-              "pr_url": pr_url or report_url,
+              "pr_url": pr_url,
               "summary": summary,
               "report_path": report_path,
               "report_url": report_url,

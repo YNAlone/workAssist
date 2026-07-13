@@ -21,6 +21,7 @@ class Settings:
     feishu_app_id: str
     feishu_app_secret: str
     feishu_bot_webhook: str
+    feishu_doc_mount_key: str
     github_token: str
     github_workflow_id: str
     github_api_base: str
@@ -46,6 +47,7 @@ class Settings:
             feishu_app_id=os.getenv("FEISHU_APP_ID", ""),
             feishu_app_secret=os.getenv("FEISHU_APP_SECRET", ""),
             feishu_bot_webhook=os.getenv("FEISHU_BOT_WEBHOOK", ""),
+            feishu_doc_mount_key=os.getenv("FEISHU_DOC_MOUNT_KEY", ""),
             github_token=os.getenv("GITHUB_TOKEN", ""),
             github_workflow_id=os.getenv("GITHUB_WORKFLOW_ID", "feishu-claude.yml"),
             github_api_base=os.getenv("GITHUB_API_BASE", "https://api.github.com"),

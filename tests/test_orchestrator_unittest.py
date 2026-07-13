@@ -47,6 +47,7 @@ def build_settings(tmp_path: Path) -> Settings:
         feishu_app_id="",
         feishu_app_secret="",
         feishu_bot_webhook="",
+        feishu_doc_mount_key="",
         github_token="",
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
@@ -336,9 +337,10 @@ class OrchestratorTests(unittest.TestCase):
         chat_id, text, message_id = reply_mock.call_args[0]
         self.assertEqual(chat_id, "c_report")
         self.assertEqual(message_id, "m_report")
+        self.assertIn("飞书云文档", text)
         self.assertIn("模块划分清晰", text)
         self.assertEqual(updated.status, TaskStatus.PR_CREATED)
-        self.assertEqual(updated.summary, "分析完成")
+        self.assertIn("feishu.cn/docx/", updated.summary)
 
     def test_github_wrap_prompt_includes_analysis_md(self) -> None:
         task = Task(

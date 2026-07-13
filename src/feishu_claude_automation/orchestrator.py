@@ -7,6 +7,7 @@ from .audit import AuditLogger
 from .cards import build_confirm_plan_card, build_task_card
 from .config import Settings
 from .feishu import FeishuClient
+from .feishu_docs import FeishuDocService
 from .github import GitHubClient
 from .llm import IntentResult, LLMClient
 from .models import (
@@ -217,20 +218,50 @@ class Orchestrator:
         report_url: str,
         report_path: str,
     ) -> None:
-        """Send analysis markdown back to the Feishu chat as a conversational reply."""
+        """Create a Feishu cloud doc from analysis markdown and reply with the link."""
         if not task.chat_id:
             return
-        limit = 3500
+
         body = (report_markdown or "").strip()
+        feishu_doc_url = ""
+        if body:
+            title = report_path.rsplit("/", 1)[-1].replace(".md", "") if report_path else f"分析报告-{task.id}"
+            try:
+                doc_service = FeishuDocService(
+                    self.feishu,
+                    mount_key=self.settings.feishu_doc_mount_key,
+                )
+                doc = doc_service.import_markdown(
+                    title=title,
+                    markdown=body,
+                    requester_open_id=task.requester_id,
+                    chat_id=task.chat_id,
+                )
+                feishu_doc_url = doc.url
+                task.summary = f"飞书文档：{feishu_doc_url}"
+                self.store.save(task)
+                self._append_audit(task, "feishu.doc_created", url=feishu_doc_url)
+            except Exception as exc:  # noqa: BLE001
+                self._append_audit(task, "feishu.doc_failed", error=str(exc))
+
+        limit = 3500
         header_parts = ["## 分析结论"]
+        if feishu_doc_url:
+            header_parts.append(f"完整文档：[打开飞书云文档]({feishu_doc_url})")
+        elif report_url:
+            header_parts.append(f"文档链接：[打开]({report_url})")
         if report_path:
-            header_parts.append(f"文件：`{report_path}`")
-        if report_url:
-            header_parts.append(f"完整文档：[打开]({report_url})")
-        if task.pr_url and task.pr_url != report_url:
+            header_parts.append(f"源文件：`{report_path}`")
+        if task.pr_url and task.pr_url not in {report_url, feishu_doc_url}:
             header_parts.append(f"PR：[{task.pr_url}]({task.pr_url})")
         header = "\n".join(header_parts) + "\n\n"
-        if not body:
+
+        if feishu_doc_url:
+            preview_limit = min(800, max(0, limit - len(header) - 20))
+            preview = body[:preview_limit].strip()
+            suffix = "…" if len(body) > preview_limit else ""
+            text = header + (preview + suffix if preview else "分析内容已写入飞书云文档。")
+        elif not body:
             text = header + (task.summary or "任务已完成。")
         elif len(header) + len(body) <= limit:
             text = header + body
