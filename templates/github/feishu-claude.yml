@@ -74,6 +74,7 @@ jobs:
             2. 写入该文件后保存；后续步骤会自动 commit / push，并由飞书机器人回传内容。
             3. 若需要修改代码，照常改代码；同时可将说明性结论写入上述 md 文件。
             4. 分支名必须与用户给定完全一致，不要臆造或拼错分支。
+            5. 当前已在正确的工作分支；写报告时不要切回基线分支，也不要调用飞书 API。文档回传由 CI / Orchestrator 自动完成。
           claude_args: |
             --max-turns 50
             --model kimi-for-coding
@@ -111,17 +112,59 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           REPORT_PATH: ${{ steps.report.outputs.report_path }}
         run: |
+          set -euo pipefail
           git config user.name "feishu-claude-bot"
           git config user.email "feishu-claude-bot@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
-          echo "=== git status ==="
-          git status --short
-          echo "=== git diff ==="
-          git diff --stat
 
           WORK_BRANCH="${{ inputs.work_branch }}"
           BASE_BRANCH="${{ inputs.base_branch }}"
           echo "no_changes=false" >> "$GITHUB_OUTPUT"
+
+          echo "=== before switch: branch=$(git branch --show-current) ==="
+          git status --short
+          git fetch origin "$BASE_BRANCH" "$WORK_BRANCH" || true
+
+          # Claude may have switched to base_branch. Capture local commits + working tree,
+          # then move everything onto WORK_BRANCH before commit/push.
+          git add -A || true
+          STASHED=0
+          if ! git diff --cached --quiet || [ -n "$(git ls-files --others --exclude-standard 2>/dev/null || true)" ]; then
+            if git stash push --include-untracked -m "feishu-pre-switch" ; then
+              STASHED=1
+            fi
+          fi
+
+          PATCH=/tmp/feishu-local.patch
+          rm -f "$PATCH"
+          if git rev-parse --verify "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
+            AHEAD_LOCAL=$(git rev-list --count "origin/${BASE_BRANCH}..HEAD" 2>/dev/null || echo 0)
+            if [ "${AHEAD_LOCAL}" -gt 0 ]; then
+              git format-patch --stdout "origin/${BASE_BRANCH}..HEAD" > "$PATCH" || true
+              echo "Captured ${AHEAD_LOCAL} local commit(s) ahead of origin/${BASE_BRANCH}"
+            fi
+          fi
+
+          if git rev-parse --verify "origin/${WORK_BRANCH}" >/dev/null 2>&1; then
+            REMOTE_AHEAD=$(git rev-list --count "origin/${BASE_BRANCH}..origin/${WORK_BRANCH}" 2>/dev/null || echo 0)
+            if [ "${REMOTE_AHEAD}" -gt 0 ]; then
+              git checkout -B "$WORK_BRANCH" "origin/${WORK_BRANCH}"
+            else
+              git checkout -B "$WORK_BRANCH" "origin/${BASE_BRANCH}"
+            fi
+          else
+            git checkout -B "$WORK_BRANCH" "origin/${BASE_BRANCH}"
+          fi
+
+          if [ -f "$PATCH" ] && [ -s "$PATCH" ]; then
+            git am --3way < "$PATCH" || git apply --index "$PATCH" || true
+          fi
+          if [ "$STASHED" = "1" ]; then
+            git stash pop || true
+          fi
+
+          echo "=== after switch: branch=$(git branch --show-current) ==="
+          git status --short
 
           # Untracked analysis markdown is invisible to `git diff`; stage it explicitly.
           if [ -n "${REPORT_PATH}" ] && [ -f "${REPORT_PATH}" ]; then
@@ -129,10 +172,8 @@ jobs:
             echo "Staged analysis report: ${REPORT_PATH}"
           fi
 
-          # Claude Code may already have committed+pushed. Only treat as
-          # "no file changes" when the work branch is also not ahead of base.
           if git diff --quiet && git diff --cached --quiet; then
-            echo "Working tree clean; checking whether Claude already pushed..."
+            echo "Working tree clean; checking whether branch already has commits..."
             git fetch origin "$WORK_BRANCH" "$BASE_BRANCH" || true
             AHEAD=0
             if git rev-parse --verify "origin/${WORK_BRANCH}" >/dev/null 2>&1; then
@@ -150,25 +191,59 @@ jobs:
 
           git add -A
           git commit -m "feat: ${{ inputs.job_id }} automated change"
-          git push origin "$WORK_BRANCH"
+          git push -u origin "HEAD:refs/heads/${WORK_BRANCH}"
 
       - name: Create pull request
         id: pr
         if: ${{ inputs.mode != 'iterate' && steps.commit.outputs.no_changes != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          JOB_ID: ${{ inputs.job_id }}
+          BASE_BRANCH: ${{ inputs.base_branch }}
+          WORK_BRANCH: ${{ inputs.work_branch }}
+          PROMPT_TEXT: ${{ inputs.prompt }}
+          REPORT_PATH: ${{ steps.report.outputs.report_path }}
         run: |
-          EXISTING=$(gh pr list --head "${{ inputs.work_branch }}" --base "${{ inputs.base_branch }}" --json url --jq '.[0].url // empty')
+          set -euo pipefail
+          EXISTING=$(gh pr list --head "$WORK_BRANCH" --base "$BASE_BRANCH" --json url --jq '.[0].url // empty')
           if [ -n "$EXISTING" ]; then
             echo "PR already exists: $EXISTING"
             echo "url=$EXISTING" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          BODY_FILE=$(mktemp)
+          {
+            echo "Automated change requested from Feishu task ${JOB_ID}."
+            echo
+            echo "Prompt:"
+            printf '%s\n' "$PROMPT_TEXT"
+          } > "$BODY_FILE"
+
+          set +e
           PR_URL=$(gh pr create \
-            --base "${{ inputs.base_branch }}" \
-            --head "${{ inputs.work_branch }}" \
-            --title "AI: ${{ inputs.job_id }}" \
-            --body "Automated change requested from Feishu task ${{ inputs.job_id }}.\n\nPrompt:\n${{ inputs.prompt }}")
+            --base "$BASE_BRANCH" \
+            --head "$WORK_BRANCH" \
+            --title "AI: ${JOB_ID}" \
+            --body-file "$BODY_FILE" 2>pr.err)
+          PR_RC=$?
+          set -e
+          if [ "$PR_RC" -ne 0 ]; then
+            cat pr.err >&2 || true
+            if grep -qi 'No commits between' pr.err; then
+              echo "No unique commits vs base; treat as analysis-only notify path."
+              echo "no_pr=true" >> "$GITHUB_OUTPUT"
+              # Keep report delivery path alive even when PR cannot be opened.
+              if [ -n "${REPORT_PATH}" ] && [ -f "${REPORT_PATH}" ]; then
+                echo "Analysis report present; continuing without PR."
+                exit 0
+              fi
+              # No report and no commits — still continue so notify can send a completed callback.
+              echo "no_changes=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            exit "$PR_RC"
+          fi
           echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Find existing pull request
@@ -186,7 +261,8 @@ jobs:
           CALLBACK_URL: ${{ inputs.callback_url }}
           JOB_ID: ${{ inputs.job_id }}
           MODE: ${{ inputs.mode }}
-          NO_CHANGES: ${{ steps.commit.outputs.no_changes }}
+          NO_CHANGES: ${{ steps.commit.outputs.no_changes || steps.pr.outputs.no_changes }}
+          NO_PR: ${{ steps.pr.outputs.no_pr }}
           PR_URL: ${{ steps.pr.outputs.url || steps.existing_pr.outputs.url }}
           REPORT_PATH: ${{ steps.report.outputs.report_path }}
           WORK_BRANCH: ${{ inputs.work_branch }}
@@ -197,6 +273,7 @@ jobs:
 
           job_id = os.environ["JOB_ID"]
           no_changes = os.environ.get("NO_CHANGES", "false") == "true"
+          no_pr = os.environ.get("NO_PR", "") == "true"
           pr_url = os.environ.get("PR_URL") or ""
           report_path = os.environ.get("REPORT_PATH") or ""
           work_branch = os.environ.get("WORK_BRANCH") or ""
@@ -207,15 +284,15 @@ jobs:
           report_url = ""
           if report_path and pathlib.Path(report_path).is_file():
               report_text = pathlib.Path(report_path).read_text(encoding="utf-8", errors="replace")
-              if not no_changes and work_branch:
+              if work_branch and not no_changes:
                   report_url = f"https://github.com/{repo}/blob/{work_branch}/{report_path}"
 
-          if no_changes and not report_text:
+          if report_text and (no_changes or no_pr or not pr_url):
+              status = "completed"
+              summary = "分析报告已生成"
+          elif no_changes and not report_text:
               status = "completed"
               summary = "任务完成但未生成分析文档或代码改动。请明确要求写入 docs/analysis-*.md 后重试。"
-          elif no_changes and report_text:
-              status = "completed"
-              summary = "分析已完成，结果将通过飞书云文档回传。"
           elif mode == "iterate":
               status = "pr_created"
               summary = "Branch updated on existing PR"
@@ -224,7 +301,7 @@ jobs:
               summary = "Pull request created" if pr_url else "变更已推送"
 
           if report_text and not summary.startswith("分析"):
-              summary = "分析报告已生成" if report_path else summary
+              summary = "分析报告已生成"
 
           payload = {
               "job_id": job_id,

@@ -48,6 +48,7 @@ def build_settings(tmp_path: Path) -> Settings:
         feishu_app_secret="",
         feishu_bot_webhook="",
         feishu_doc_mount_key="",
+        feishu_doc_mount_folder="test",
         github_token="",
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
@@ -103,6 +104,37 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.DISPATCHED)
         self.assertTrue(task.work_branch.startswith("ai/feishu-"))
         self.assertEqual(task.mode, TaskMode.CREATE)
+
+    def test_create_ignores_reused_or_base_work_branch(self) -> None:
+        orchestrator = Orchestrator(self.settings)
+        reused = orchestrator.create_task(
+            TaskRequest(
+                repo="acme/demo",
+                prompt="分析模块结构，不要改代码",
+                base_branch="refactor/agent-platform",
+                work_branch="ai/feishu-oldtaskid",
+                requester_id="u1",
+                chat_id="c1",
+                mode=TaskMode.CREATE,
+            )
+        )
+        self.assertNotEqual(reused.work_branch, "ai/feishu-oldtaskid")
+        self.assertTrue(reused.work_branch.startswith("ai/feishu-"))
+        self.assertNotEqual(reused.work_branch, "refactor/agent-platform")
+
+        same_as_base = orchestrator.create_task(
+            TaskRequest(
+                repo="acme/demo",
+                prompt="分析模块结构，不要改代码",
+                base_branch="refactor/agent-platform",
+                work_branch="refactor/agent-platform",
+                requester_id="u1",
+                chat_id="c1",
+                mode=TaskMode.CREATE,
+            )
+        )
+        self.assertNotEqual(same_as_base.work_branch, "refactor/agent-platform")
+        self.assertTrue(same_as_base.work_branch.startswith("ai/feishu-"))
 
     def test_high_risk_requires_approval(self) -> None:
         orchestrator = Orchestrator(self.settings)
