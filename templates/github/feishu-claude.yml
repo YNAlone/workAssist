@@ -75,7 +75,7 @@ jobs:
             3. 若需要修改代码，照常改代码；同时可将说明性结论写入上述 md 文件。
             4. 分支名必须与用户给定完全一致，不要臆造或拼错分支。
           claude_args: |
-            --max-turns 20
+            --max-turns 50
             --model kimi-for-coding
             --allowedTools Edit,Read,Write,Bash
 
