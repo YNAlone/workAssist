@@ -47,6 +47,8 @@ def build_settings(tmp_path: Path) -> Settings:
         feishu_app_id="",
         feishu_app_secret="",
         feishu_bot_webhook="",
+        feishu_doc_mount_key="",
+        feishu_doc_mount_folder="test",
         github_token="",
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
@@ -102,6 +104,37 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.DISPATCHED)
         self.assertTrue(task.work_branch.startswith("ai/feishu-"))
         self.assertEqual(task.mode, TaskMode.CREATE)
+
+    def test_create_ignores_reused_or_base_work_branch(self) -> None:
+        orchestrator = Orchestrator(self.settings)
+        reused = orchestrator.create_task(
+            TaskRequest(
+                repo="acme/demo",
+                prompt="分析模块结构，不要改代码",
+                base_branch="refactor/agent-platform",
+                work_branch="ai/feishu-oldtaskid",
+                requester_id="u1",
+                chat_id="c1",
+                mode=TaskMode.CREATE,
+            )
+        )
+        self.assertNotEqual(reused.work_branch, "ai/feishu-oldtaskid")
+        self.assertTrue(reused.work_branch.startswith("ai/feishu-"))
+        self.assertNotEqual(reused.work_branch, "refactor/agent-platform")
+
+        same_as_base = orchestrator.create_task(
+            TaskRequest(
+                repo="acme/demo",
+                prompt="分析模块结构，不要改代码",
+                base_branch="refactor/agent-platform",
+                work_branch="refactor/agent-platform",
+                requester_id="u1",
+                chat_id="c1",
+                mode=TaskMode.CREATE,
+            )
+        )
+        self.assertNotEqual(same_as_base.work_branch, "refactor/agent-platform")
+        self.assertTrue(same_as_base.work_branch.startswith("ai/feishu-"))
 
     def test_high_risk_requires_approval(self) -> None:
         orchestrator = Orchestrator(self.settings)
@@ -237,6 +270,50 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(iter_task.work_branch, "devTT")
         self.assertEqual(iter_task.parent_task_id, task.id)
 
+    def test_card_action_schema_v2(self) -> None:
+        orchestrator = Orchestrator(self.settings)
+        first = orchestrator.handle_feishu_message(
+            {
+                "header": {"event_type": "im.message.receive_v1", "token": "token"},
+                "event": {
+                    "sender": {"sender_id": {"open_id": "u1"}},
+                    "message": {
+                        "chat_id": "c_card_v2",
+                        "message_id": "m1",
+                        "content": json.dumps(
+                            {
+                                "text": "帮我在 workAssist 项目中基于 dev_test 创建一个 cardV2 分支，然后新增登录功能"
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                },
+            }
+        )
+        self.assertEqual(first.get("action"), "confirm_plan")
+        session_id = first["session_id"]
+
+        # Feishu card.action.trigger schema 2.0 nests action under event.
+        confirm = orchestrator.handle_card_action(
+            {
+                "schema": "2.0",
+                "header": {"event_type": "card.action.trigger", "token": "token"},
+                "event": {
+                    "operator": {"open_id": "u1"},
+                    "action": {
+                        "tag": "button",
+                        "value": {"action": "confirm_execute", "session_id": session_id},
+                    },
+                },
+            }
+        )
+        self.assertIn("task_id", confirm)
+        self.assertNotEqual(confirm.get("ignored"), True)
+        task = orchestrator.get_task(confirm["task_id"])
+        assert task is not None
+        self.assertEqual(task.status, TaskStatus.DISPATCHED)
+        self.assertEqual(task.work_branch, "cardV2")
+
     def test_ai_fix_command_still_works(self) -> None:
         orchestrator = Orchestrator(self.settings)
         result = orchestrator.handle_feishu_message(
@@ -292,9 +369,10 @@ class OrchestratorTests(unittest.TestCase):
         chat_id, text, message_id = reply_mock.call_args[0]
         self.assertEqual(chat_id, "c_report")
         self.assertEqual(message_id, "m_report")
+        self.assertIn("飞书云文档", text)
         self.assertIn("模块划分清晰", text)
         self.assertEqual(updated.status, TaskStatus.PR_CREATED)
-        self.assertEqual(updated.summary, "分析完成")
+        self.assertIn("feishu.cn/docx/", updated.summary)
 
     def test_github_wrap_prompt_includes_analysis_md(self) -> None:
         task = Task(

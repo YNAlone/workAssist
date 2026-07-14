@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 from .audit import AuditLogger
 from .cards import build_confirm_plan_card, build_task_card
 from .config import Settings
 from .feishu import FeishuClient
+from .feishu_docs import FeishuDocService
 from .github import GitHubClient
 from .llm import IntentResult, LLMClient
 from .models import (
@@ -75,8 +77,23 @@ class Orchestrator:
         if request.mode == TaskMode.ITERATE and request.work_branch:
             work_branch = request.work_branch
             self.policy.ensure_work_branch_allowed(work_branch)
+        elif request.mode == TaskMode.CREATE:
+            # Always allocate a fresh work branch for create tasks.
+            # Reusing session.work_branch (e.g. ai/dev-<old>) or the base_branch
+            # causes "No commits between base and head" / checkout -b failures.
+            hint = (request.work_branch or "").strip()
+            prefix = f"{self.policy.work_branch_prefix}-"
+            if hint and hint != request.base_branch and not hint.startswith(prefix):
+                work_branch = self.policy.normalize_work_branch(hint, task_id)
+                if work_branch == request.base_branch:
+                    work_branch = self.policy.build_work_branch(task_id)
+            else:
+                work_branch = self.policy.build_work_branch(task_id)
+            self.policy.ensure_work_branch_allowed(work_branch)
         elif request.work_branch:
             work_branch = self.policy.normalize_work_branch(request.work_branch, task_id)
+            if work_branch == request.base_branch:
+                work_branch = self.policy.build_work_branch(task_id)
         else:
             work_branch = self.policy.build_work_branch(task_id)
             self.policy.ensure_work_branch_allowed(work_branch)
@@ -181,8 +198,10 @@ class Orchestrator:
         if status == "running":
             task.status = TaskStatus.RUNNING
             session_status = SessionStatus.RUNNING
-        elif status in {"pr_created", "updated"}:
+        elif status in {"pr_created", "updated", "completed", "succeeded"}:
             task.status = TaskStatus.PR_CREATED
+            if status in {"completed", "succeeded"} and not payload.get("pr_url"):
+                task.summary = payload.get("summary") or task.summary or "Completed without code changes"
             session_status = SessionStatus.AWAITING_FEEDBACK
         elif status == "failed":
             task.status = TaskStatus.FAILED
@@ -214,20 +233,51 @@ class Orchestrator:
         report_url: str,
         report_path: str,
     ) -> None:
-        """Send analysis markdown back to the Feishu chat as a conversational reply."""
+        """Create a Feishu cloud doc from analysis markdown and reply with the link."""
         if not task.chat_id:
             return
-        limit = 3500
+
         body = (report_markdown or "").strip()
+        feishu_doc_url = ""
+        if body:
+            title = report_path.rsplit("/", 1)[-1].replace(".md", "") if report_path else f"分析报告-{task.id}"
+            try:
+                doc_service = FeishuDocService(
+                    self.feishu,
+                    mount_key=self.settings.feishu_doc_mount_key,
+                    mount_folder=self.settings.feishu_doc_mount_folder,
+                )
+                doc = doc_service.import_markdown(
+                    title=title,
+                    markdown=body,
+                    requester_open_id=task.requester_id,
+                    chat_id=task.chat_id,
+                )
+                feishu_doc_url = doc.url
+                task.summary = f"飞书文档：{feishu_doc_url}"
+                self.store.save(task)
+                self._append_audit(task, "feishu.doc_created", url=feishu_doc_url)
+            except Exception as exc:  # noqa: BLE001
+                self._append_audit(task, "feishu.doc_failed", error=str(exc))
+
+        limit = 3500
         header_parts = ["## 分析结论"]
+        if feishu_doc_url:
+            header_parts.append(f"完整文档：[打开飞书云文档]({feishu_doc_url})")
+        elif report_url:
+            header_parts.append(f"文档链接：[打开]({report_url})")
         if report_path:
-            header_parts.append(f"文件：`{report_path}`")
-        if report_url:
-            header_parts.append(f"完整文档：[打开]({report_url})")
-        if task.pr_url and task.pr_url != report_url:
+            header_parts.append(f"源文件：`{report_path}`")
+        if task.pr_url and task.pr_url not in {report_url, feishu_doc_url}:
             header_parts.append(f"PR：[{task.pr_url}]({task.pr_url})")
         header = "\n".join(header_parts) + "\n\n"
-        if not body:
+
+        if feishu_doc_url:
+            preview_limit = min(800, max(0, limit - len(header) - 20))
+            preview = body[:preview_limit].strip()
+            suffix = "…" if len(body) > preview_limit else ""
+            text = header + (preview + suffix if preview else "分析内容已写入飞书云文档。")
+        elif not body:
             text = header + (task.summary or "任务已完成。")
         elif len(header) + len(body) <= limit:
             text = header + body
@@ -303,6 +353,16 @@ class Orchestrator:
                 task = self.approve_task(session.current_task_id, requester_id)
                 self._reply_text(chat_id, "已批准，开始执行。", message_id)
                 return {"session_id": session.id, "task_id": task.id, "status": task.status.value}
+
+        if session.status == SessionStatus.AWAITING_CONFIRM and looks_like_confirmation(cleaned):
+            task = self.confirm_session_execute(session.id, requester_id)
+            self._reply_text(chat_id, "已确认，开始执行。", message_id)
+            return {
+                "session_id": session.id,
+                "task_id": task.id,
+                "status": task.status.value,
+                "action": "execute",
+            }
 
         if looks_like_cancel(cleaned) and session.status != SessionStatus.CLOSED:
             if session.current_task_id:
@@ -581,12 +641,33 @@ class Orchestrator:
         if not self.feishu.verify_token(self._extract_verification_token(payload)):
             raise PolicyError("Invalid Feishu verification token")
 
-        action = payload.get("action", {})
-        value = action.get("value", {})
+        # Feishu card callback schema 2.0 nests action under event.*;
+        # older payloads may put action at the top level.
+        event_body = payload.get("event") if isinstance(payload.get("event"), dict) else {}
+        action = event_body.get("action") if isinstance(event_body.get("action"), dict) else {}
+        if not action:
+            action = payload.get("action") if isinstance(payload.get("action"), dict) else {}
+
+        raw_value = action.get("value", {})
+        if isinstance(raw_value, str):
+            try:
+                value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = {"action": raw_value}
+        elif isinstance(raw_value, dict):
+            value = raw_value
+        else:
+            value = {}
+
         action_name = value.get("action")
         task_id = value.get("task_id")
         session_id = value.get("session_id")
-        operator = action.get("operator", {}).get("open_id", "")
+        operator = (
+            (event_body.get("operator") or {}).get("open_id")
+            or (action.get("operator") or {}).get("open_id")
+            or (payload.get("operator") or {}).get("open_id")
+            or ""
+        )
 
         if action_name == "approve":
             task = self.approve_task(task_id, operator)
@@ -605,7 +686,7 @@ class Orchestrator:
             self._reply_text(session.chat_id, "已取消会话。")
             return {"session_id": session.id, "status": session.status.value}
 
-        return {"ignored": True, "action": action_name}
+        return {"ignored": True, "action": action_name, "value_keys": sorted(value.keys())}
 
     def _sync_session_from_task(self, task: Task, status: SessionStatus) -> None:
         if not task.session_id:
