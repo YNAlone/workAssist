@@ -21,9 +21,80 @@ class FeishuDocResult:
 class FeishuDocService:
     """Import markdown as a Feishu docx cloud document and grant viewer access."""
 
-    def __init__(self, client: FeishuClient, *, mount_key: str = "") -> None:
+    def __init__(
+        self,
+        client: FeishuClient,
+        *,
+        mount_key: str = "",
+        mount_folder: str = "",
+    ) -> None:
         self.client = client
         self.mount_key = mount_key
+        self.mount_folder = mount_folder.strip()
+        self._resolved_mount_key = ""
+
+    def _resolve_mount_key(self) -> str:
+        if self._resolved_mount_key:
+            return self._resolved_mount_key
+        if self.mount_key:
+            self._resolved_mount_key = self.mount_key
+            return self._resolved_mount_key
+        if self.mount_folder:
+            folder = self.ensure_folder(self.mount_folder, parent_folder_token="")
+            self._resolved_mount_key = folder.token
+            return self._resolved_mount_key
+        return ""
+
+    @staticmethod
+    def _ensure_api_ok(result: dict[str, Any], *, action: str) -> dict[str, Any]:
+        if result.get("code", 0) != 0:
+            raise RuntimeError(f"Feishu {action} failed: {result}")
+        return result.get("data", {})
+
+    def ensure_folder(self, name: str, *, parent_folder_token: str = "") -> FeishuDocResult:
+        """Find or create a folder under the given parent (empty = cloud space root)."""
+        if self.client.settings.dry_run:
+            return FeishuDocResult(
+                token=f"dry_run_folder_{name}",
+                url=f"https://example.feishu.cn/drive/folder/dry_run_folder_{name}",
+            )
+
+        try:
+            existing = self._find_folder(name, parent_folder_token=parent_folder_token)
+            if existing:
+                return existing
+        except RuntimeError:
+            # Listing may fail when drive scopes are missing; still try create_folder.
+            pass
+
+        data = self._ensure_api_ok(
+            self.client._request(
+                "https://open.feishu.cn/open-apis/drive/v1/files/create_folder",
+                {"name": name, "folder_token": parent_folder_token},
+                headers=self._auth_headers(),
+            ),
+            action="create_folder",
+        )
+        token = data.get("token", "")
+        url = data.get("url", "") or (f"https://feishu.cn/drive/folder/{token}" if token else "")
+        if not token:
+            raise RuntimeError(f"Feishu create_folder returned no token: {data}")
+        return FeishuDocResult(token=token, url=url)
+
+    def _find_folder(self, name: str, *, parent_folder_token: str) -> FeishuDocResult | None:
+        query = urllib.parse.urlencode({"folder_token": parent_folder_token})
+        url = f"https://open.feishu.cn/open-apis/drive/v1/files?{query}"
+        result = self._get_json(url)
+        data = self._ensure_api_ok(result, action="list_files")
+        for item in data.get("files", []):
+            if item.get("type") == "folder" and item.get("name") == name:
+                token = item.get("token", "")
+                item_url = item.get("url", "") or (
+                    f"https://feishu.cn/drive/folder/{token}" if token else ""
+                )
+                if token:
+                    return FeishuDocResult(token=token, url=item_url)
+        return None
 
     def import_markdown(
         self,
@@ -83,7 +154,7 @@ class FeishuDocService:
             "file_token": file_token,
             "type": "docx",
             "file_name": title or "分析报告",
-            "point": {"mount_type": 1, "mount_key": self.mount_key},
+            "point": {"mount_type": 1, "mount_key": self._resolve_mount_key()},
         }
         result = self.client._request(
             "https://open.feishu.cn/open-apis/drive/v1/import_tasks",

@@ -17,6 +17,7 @@ def build_settings(**overrides) -> Settings:
         feishu_app_secret="secret",
         feishu_bot_webhook="",
         feishu_doc_mount_key="",
+        feishu_doc_mount_folder="test",
         github_token="",
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
@@ -39,6 +40,12 @@ class FeishuDocServiceTest(unittest.TestCase):
         service = FeishuDocService(client)
         result = service.import_markdown(title="demo", markdown="# hello", requester_open_id="ou_x")
         self.assertIn("feishu.cn/docx/", result.url)
+
+    def test_ensure_folder_dry_run(self) -> None:
+        client = FeishuClient(build_settings(dry_run=True))
+        service = FeishuDocService(client, mount_folder="test")
+        folder = service.ensure_folder("test", parent_folder_token="")
+        self.assertIn("dry_run_folder_test", folder.token)
 
     @patch.object(FeishuDocService, "_poll_import_task")
     @patch.object(FeishuDocService, "_create_import_task", return_value="ticket-1")

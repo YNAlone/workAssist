@@ -75,7 +75,7 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
 4. 已有 PR/工作分支后，用户要求继续改用 iterate，prompt 写本轮增量。
 5. 用户取消用 cancel；闲聊/问能力用 chitchat。
 6. 仅使用 allowed_repos 中的仓库；用户说短名时填短名或完整名均可。
-7. base_branch 必须来自用户明确指定（如「基于 dev_test」「从 main 开分支」）；不要默认填 main 或其他分支。未指定时 missing_fields 加入 base_branch 并追问。
+7. base_branch 必须来自用户明确指定（如用户在会话中说明使用xxx分支/基于xxx分支等）；不要默认填 main 或其他分支。未指定时 missing_fields 加入 base_branch 并追问。
 8. 不要编造未提供的需求细节。
 """
 

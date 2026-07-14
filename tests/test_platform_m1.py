@@ -55,6 +55,7 @@ def settings(tmp_path: Path) -> Settings:
         feishu_app_secret="",
         feishu_bot_webhook="",
         feishu_doc_mount_key="",
+        feishu_doc_mount_folder="test",
         github_token="",
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
