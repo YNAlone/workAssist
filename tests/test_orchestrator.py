@@ -43,6 +43,9 @@ def settings(tmp_path: Path) -> Settings:
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
         github_dispatch_ref="dev_test",
+        gitlab_token="",
+        gitlab_api_base="http://10.27.249.150:8888/api/v4",
+        gitlab_dispatch_ref="main",
         policy_file=policy_file,
         task_store_path=tmp_path / "tasks.json",
         audit_log_path=tmp_path / "audit.log",
@@ -51,6 +54,14 @@ def settings(tmp_path: Path) -> Settings:
         orch_llm_model="kimi-for-coding",
         session_store_path=tmp_path / "sessions.json",
         session_ttl_minutes=120,
+        local_worker_enabled=False,
+        local_worker_token="",
+        local_worker_queue_path=tmp_path / "local_worker_queue.json",
+        local_worker_poll_seconds=5,
+        local_worker_orchestrator_url="",
+        anthropic_api_key="",
+        anthropic_base_url="https://api.kimi.com/coding/",
+        anthropic_model="kimi-for-coding",
     )
 
 
@@ -70,6 +81,77 @@ def test_policy_high_risk(settings: Settings):
 def test_resolve_repo_short_name(settings: Settings):
     policy = Policy.load(settings.policy_file)
     assert policy.resolve_repo("workAssist") == "YNAlone/workAssist"
+
+
+def test_gitlab_repos_in_policy_catalog():
+    policy = Policy.load(Path("config/policy.example.json"))
+    assert "thinkingdata/official-web-frontend" in policy.allowed_repos
+    assert "thinkingdata/official-web-server" in policy.allowed_repos
+    assert policy.provider_for("thinkingdata/official-web-frontend") == "gitlab"
+    assert policy.provider_for("thinkingdata/official-web-server") == "gitlab"
+    assert (
+        policy.resolve_repo("http://10.27.249.150:8888/thinkingdata/official-web-frontend")
+        == "thinkingdata/official-web-frontend"
+    )
+    assert policy.resolve_repo("official-web-server") == "thinkingdata/official-web-server"
+
+
+def test_dispatch_routes_gitlab_repos(tmp_path: Path):
+    policy_file = tmp_path / "policy.json"
+    policy_file.write_text(
+        Path("config/policy.example.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    settings = Settings(
+        host="127.0.0.1",
+        port=18080,
+        callback_base_url="http://localhost:18080",
+        dry_run=True,
+        feishu_verification_token="token",
+        feishu_app_id="",
+        feishu_app_secret="",
+        feishu_bot_webhook="",
+        feishu_doc_mount_key="",
+        feishu_doc_mount_folder="test",
+        github_token="",
+        github_workflow_id="feishu-claude.yml",
+        github_api_base="https://api.github.com",
+        github_dispatch_ref="dev_test",
+        gitlab_token="glpat-test",
+        gitlab_api_base="http://10.27.249.150:8888/api/v4",
+        gitlab_dispatch_ref="main",
+        policy_file=policy_file,
+        task_store_path=tmp_path / "tasks.json",
+        audit_log_path=tmp_path / "audit.log",
+        orch_llm_api_key="",
+        orch_llm_base_url="https://api.kimi.com/coding/",
+        orch_llm_model="kimi-for-coding",
+        session_store_path=tmp_path / "sessions.json",
+        session_ttl_minutes=120,
+        local_worker_enabled=False,
+        local_worker_token="",
+        local_worker_queue_path=tmp_path / "local_worker_queue.json",
+        local_worker_poll_seconds=5,
+        local_worker_orchestrator_url="",
+        anthropic_api_key="",
+        anthropic_base_url="https://api.kimi.com/coding/",
+        anthropic_model="kimi-for-coding",
+    )
+    orchestrator = Orchestrator(settings)
+    task = orchestrator.create_task(
+        TaskRequest(
+            repo="official-web-frontend",
+            prompt="Add a health check endpoint description",
+            base_branch="main",
+            requester_id="u1",
+            chat_id="c1",
+        )
+    )
+    assert task.status == TaskStatus.DISPATCHED
+    assert task.repo == "thinkingdata/official-web-frontend"
+    assert any(item.get("event") == "task.dispatched" for item in task.audit)
+    dispatched = [item for item in task.audit if item.get("event") == "task.dispatched"][-1]
+    assert dispatched["dispatch"]["provider"] == "gitlab"
 
 
 def test_create_low_risk_task(settings: Settings):

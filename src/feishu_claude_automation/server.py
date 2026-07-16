@@ -59,6 +59,15 @@ class AutomationHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         return
 
+    def _worker_authorized(self) -> bool:
+        expected = (self.orchestrator.settings.local_worker_token or "").strip()
+        if not expected:
+            return False
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return False
+        return auth[7:].strip() == expected
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/health":
@@ -142,6 +151,67 @@ class AutomationHandler(BaseHTTPRequestHandler):
                 self._log_request(path, payload, result=result)
                 self._send_json(HTTPStatus.OK, result)
                 return
+            if path == "/v1/worker/jobs":
+                if not self._worker_authorized():
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return
+                from .models import Task, TaskMode, TaskStatus, RiskLevel
+
+                task = Task(
+                    id=str(payload.get("job_id") or payload.get("id") or ""),
+                    repo=str(payload.get("repo") or ""),
+                    prompt=str(payload.get("prompt") or ""),
+                    base_branch=str(payload.get("base_branch") or ""),
+                    work_branch=str(payload.get("work_branch") or ""),
+                    requester_id=str(payload.get("requester_id") or ""),
+                    chat_id=str(payload.get("chat_id") or ""),
+                    status=TaskStatus.QUEUED,
+                    risk_level=RiskLevel.LOW,
+                    mode=TaskMode(str(payload.get("mode") or TaskMode.CREATE.value)),
+                    executor=str(payload.get("executor") or "local_worker"),
+                    delivery=str(payload.get("delivery") or "push"),
+                )
+                if not task.id:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "job_id is required"})
+                    return
+                local_path = self.orchestrator.policy.local_path_for(task.repo)
+                if not local_path:
+                    self._send_json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": f"no local_path configured for repo: {task.repo}"},
+                    )
+                    return
+                result = self.orchestrator.executor.local_worker.enqueue(
+                    task,
+                    local_path=local_path,
+                    provider=self.orchestrator.policy.provider_for(task.repo),
+                )
+                self._log_request(path, payload, result=result)
+                self._send_json(HTTPStatus.CREATED, result)
+                return
+            if path == "/v1/worker/jobs/claim":
+                if not self._worker_authorized():
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return
+                job = self.orchestrator.executor.local_worker.claim()
+                result = {"job": job}
+                self._log_request(path, payload, result={"job_id": job.get("job_id") if job else None})
+                self._send_json(HTTPStatus.OK, result)
+                return
+            if path == "/v1/worker/jobs/complete":
+                if not self._worker_authorized():
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return
+                job_id = str(payload.get("job_id") or "")
+                if not job_id:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "job_id is required"})
+                    return
+                status = str(payload.get("status") or "completed")
+                self.orchestrator.executor.local_worker.complete(job_id, status=status)
+                result = {"job_id": job_id, "status": status}
+                self._log_request(path, payload, result=result)
+                self._send_json(HTTPStatus.OK, result)
+                return
             if path == "/tasks":
                 from .models import TaskRequest
 
@@ -152,6 +222,8 @@ class AutomationHandler(BaseHTTPRequestHandler):
                     requester_id=payload.get("requester_id", ""),
                     chat_id=payload.get("chat_id", ""),
                     issue=payload.get("issue", ""),
+                    executor=payload.get("executor", ""),
+                    delivery=payload.get("delivery", ""),
                 )
                 task = self.orchestrator.create_task(request)
                 result = task.to_dict()

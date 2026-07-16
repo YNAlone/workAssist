@@ -1,7 +1,33 @@
 {
+  "default_executor": "vcs",
   "allowed_repos": [
-    "YNAlone/workAssist"
+    "YNAlone/workAssist",
+    "thinkingdata/official-web-frontend",
+    "thinkingdata/official-web-server"
   ],
+  "repo_catalog": {
+    "YNAlone/workAssist": {
+      "provider": "github",
+      "url": "https://github.com/YNAlone/workAssist",
+      "executor": "local_worker",
+      "local_path": "/data/repos/workAssist",
+      "default_delivery": "push"
+    },
+    "thinkingdata/official-web-frontend": {
+      "provider": "gitlab",
+      "url": "http://10.27.249.150:8888/thinkingdata/official-web-frontend",
+      "executor": "local_worker",
+      "local_path": "/Users/liyilun/Documents/Work/official-web-frontend",
+      "default_delivery": "push"
+    },
+    "thinkingdata/official-web-server": {
+      "provider": "gitlab",
+      "url": "http://10.27.249.150:8888/thinkingdata/official-web-server",
+      "executor": "local_worker",
+      "local_path": "/Users/liyilun/Documents/Work/official-web-server",
+      "default_delivery": "push"
+    }
+  },
   "protected_branches": ["main", "master", "release"],
   "allowed_requesters": [
   ],

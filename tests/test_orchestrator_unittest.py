@@ -53,6 +53,9 @@ def build_settings(tmp_path: Path) -> Settings:
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
         github_dispatch_ref="dev_test",
+        gitlab_token="",
+        gitlab_api_base="http://10.27.249.150:8888/api/v4",
+        gitlab_dispatch_ref="main",
         policy_file=policy_file,
         task_store_path=tmp_path / "tasks.json",
         audit_log_path=tmp_path / "audit.log",
@@ -61,6 +64,14 @@ def build_settings(tmp_path: Path) -> Settings:
         orch_llm_model="kimi-for-coding",
         session_store_path=tmp_path / "sessions.json",
         session_ttl_minutes=120,
+        local_worker_enabled=False,
+        local_worker_token="",
+        local_worker_queue_path=tmp_path / "local_worker_queue.json",
+        local_worker_poll_seconds=5,
+        local_worker_orchestrator_url="",
+        anthropic_api_key="",
+        anthropic_base_url="https://api.kimi.com/coding/",
+        anthropic_model="kimi-for-coding",
     )
 
 

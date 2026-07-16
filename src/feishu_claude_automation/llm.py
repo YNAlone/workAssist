@@ -31,6 +31,8 @@ class IntentResult:
     reply_to_user: str = ""
     missing_fields: list[str] = field(default_factory=list)
     confidence: float = 0.0
+    executor: str = ""
+    delivery: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> IntentResult:
@@ -53,6 +55,8 @@ class IntentResult:
             reply_to_user=str(data.get("reply_to_user", "") or ""),
             missing_fields=[str(item) for item in missing],
             confidence=confidence,
+            executor=str(data.get("executor", "") or ""),
+            delivery=str(data.get("delivery", "") or ""),
         )
 
 
@@ -65,7 +69,9 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
   "prompt": "给 Claude Code 的完整执行说明",
   "reply_to_user": "给用户的中文回复",
   "missing_fields": ["repo"|"base_branch"|"prompt" 等缺失项],
-  "confidence": 0.0-1.0
+  "confidence": 0.0-1.0,
+  "executor": "local_worker|github_actions|gitlab_ci|vcs 或留空",
+  "delivery": "push|local_only 或留空"
 }
 
 规则：
@@ -77,6 +83,8 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
 6. 仅使用 allowed_repos 中的仓库；用户说短名时填短名或完整名均可。
 7. base_branch 必须来自用户明确指定（如用户在会话中说明使用xxx分支/基于xxx分支等）；不要默认填 main 或其他分支。未指定时 missing_fields 加入 base_branch 并追问。
 8. 不要编造未提供的需求细节。
+9. 用户说「本机跑」「本地 worker」「不用 CI」时 executor=local_worker。
+10. 用户说「只改本地」「不要推远程」「不要开 PR」时 delivery=local_only；说「推远程」「开 PR/MR」时 delivery=push。
 """
 
 
@@ -291,6 +299,16 @@ class LLMClient:
         if "功能" in text or "修复" in text or "新增" in text or "fix" in lowered or len(text) > 15:
             prompt = text if not prompt else f"{prompt}\n补充：{text}"
 
+        executor = session.executor
+        if any(word in text for word in ("本机", "本地 worker", "本地执行", "不用 ci", "不用ci")):
+            executor = "local_worker"
+
+        delivery = session.delivery
+        if any(word in text for word in ("只改本地", "不要推远程", "不要开 pr", "不要开pr", "不要推送")):
+            delivery = "local_only"
+        elif any(word in text for word in ("推远程", "开 pr", "开pr", "开 mr", "开mr", "推送远程")):
+            delivery = "push"
+
         missing: list[str] = []
         if not repo:
             missing.append("repo")
@@ -316,6 +334,8 @@ class LLMClient:
                 reply_to_user="；".join(ask) + "。",
                 missing_fields=missing,
                 confidence=0.7,
+                executor=executor,
+                delivery=delivery,
             )
 
         return IntentResult(
@@ -326,4 +346,6 @@ class LLMClient:
             prompt=prompt,
             reply_to_user="计划已整理，请确认后开始执行。",
             confidence=0.85,
+            executor=executor,
+            delivery=delivery,
         )

@@ -1,0 +1,166 @@
+# Copy to each target GitLab repo as `.gitlab-ci.yml` (or include from a shared config).
+# Orchestrator triggers this pipeline with FEISHU_* variables via GitLab API.
+
+stages:
+  - automate
+
+workflow:
+  rules:
+    - if: $FEISHU_JOB_ID
+
+variables:
+  FEISHU_MODE: "create"
+  ANTHROPIC_BASE_URL: "https://api.kimi.com/coding/"
+  ANTHROPIC_MODEL: "kimi-for-coding"
+  ANTHROPIC_SMALL_FAST_MODEL: "kimi-for-coding"
+  GIT_STRATEGY: fetch
+  GIT_DEPTH: "0"
+
+feishu-claude:
+  stage: automate
+  image: node:22-bookworm
+  resource_group: feishu-claude
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git curl ca-certificates python3 >/dev/null
+    - npm install -g @anthropic-ai/claude-code
+    - git config user.name "feishu-claude-bot"
+    - git config user.email "feishu-claude-bot@users.noreply.gitlab.com"
+  script:
+    - |
+      set -euo pipefail
+      curl -sS -X POST "${FEISHU_CALLBACK_URL}" \
+        -H "Content-Type: application/json" \
+        -d "{\"job_id\":\"${FEISHU_JOB_ID}\",\"status\":\"running\"}"
+
+      if [ "${FEISHU_MODE}" = "iterate" ]; then
+        git fetch origin "${FEISHU_WORK_BRANCH}"
+        git checkout -B "${FEISHU_WORK_BRANCH}" "origin/${FEISHU_WORK_BRANCH}"
+      else
+        git fetch origin "${FEISHU_BASE_BRANCH}"
+        git checkout -B "${FEISHU_WORK_BRANCH}" "origin/${FEISHU_BASE_BRANCH}"
+      fi
+
+      printf '%s\n' "${FEISHU_PROMPT}" > /tmp/feishu-prompt.txt
+      claude -p --dangerously-skip-permissions \
+        --max-turns 50 \
+        --model "${ANTHROPIC_MODEL}" \
+        --allowedTools "Edit,Read,Write,Bash" \
+        "$(cat /tmp/feishu-prompt.txt)"
+
+      REPORT_PATH=""
+      TARGET="docs/analysis-${FEISHU_JOB_ID}.md"
+      if [ -f "${TARGET}" ]; then
+        REPORT_PATH="${TARGET}"
+      else
+        CANDIDATE=$(git ls-files --others --exclude-standard 'docs/analysis-*.md' 2>/dev/null | head -n 1 || true)
+        if [ -z "${CANDIDATE}" ]; then
+          CANDIDATE=$(ls -1t docs/analysis-*.md 2>/dev/null | head -n 1 || true)
+        fi
+        if [ -n "${CANDIDATE}" ] && [ -f "${CANDIDATE}" ]; then
+          REPORT_PATH="${CANDIDATE}"
+        fi
+      fi
+
+      NO_CHANGES=false
+      if [ -n "${REPORT_PATH}" ]; then
+        git add "${REPORT_PATH}"
+      fi
+      if git diff --quiet && git diff --cached --quiet; then
+        NO_CHANGES=true
+      else
+        git add -A
+        git commit -m "feat: ${FEISHU_JOB_ID} automated change"
+        git push -o ci.skip \
+          "${CI_SERVER_PROTOCOL}://oauth2:${GITLAB_TOKEN}@${CI_SERVER_HOST}${CI_SERVER_PORT:+:${CI_SERVER_PORT}}/${CI_PROJECT_PATH}.git" \
+          "HEAD:refs/heads/${FEISHU_WORK_BRANCH}"
+      fi
+
+      PR_URL=""
+      if [ "${NO_CHANGES}" != "true" ]; then
+        EXISTING=$(curl -sS --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests?source_branch=${FEISHU_WORK_BRANCH}&target_branch=${FEISHU_BASE_BRANCH}&state=opened" \
+          | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data[0]["web_url"] if data else "")')
+        if [ -n "${EXISTING}" ]; then
+          PR_URL="${EXISTING}"
+        elif [ "${FEISHU_MODE}" != "iterate" ]; then
+          BODY=$(python3 - <<'PY'
+      import json, os
+      prompt = os.environ.get("FEISHU_PROMPT", "")
+      print(json.dumps({
+          "source_branch": os.environ["FEISHU_WORK_BRANCH"],
+          "target_branch": os.environ["FEISHU_BASE_BRANCH"],
+          "title": f"AI: {os.environ['FEISHU_JOB_ID']}",
+          "description": f"Automated change requested from Feishu task {os.environ['FEISHU_JOB_ID']}.\n\nPrompt:\n{prompt}",
+          "remove_source_branch": False,
+      }))
+      PY
+          )
+          PR_URL=$(curl -sS --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+            --header "Content-Type: application/json" \
+            --data "${BODY}" \
+            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("web_url",""))')
+        fi
+      fi
+
+      export NO_CHANGES PR_URL REPORT_PATH
+      python3 <<'PY'
+      import json, os, pathlib, urllib.request
+
+      job_id = os.environ["FEISHU_JOB_ID"]
+      no_changes = os.environ.get("NO_CHANGES", "false") == "true"
+      pr_url = os.environ.get("PR_URL") or ""
+      report_path = os.environ.get("REPORT_PATH") or ""
+      work_branch = os.environ.get("FEISHU_WORK_BRANCH") or ""
+      mode = os.environ.get("FEISHU_MODE") or "create"
+      project_url = os.environ.get("CI_PROJECT_URL") or ""
+
+      report_text = ""
+      report_url = ""
+      if report_path and pathlib.Path(report_path).is_file():
+          report_text = pathlib.Path(report_path).read_text(encoding="utf-8", errors="replace")
+          if work_branch and project_url and not no_changes:
+              report_url = f"{project_url}/-/blob/{work_branch}/{report_path}"
+
+      if report_text and (no_changes or not pr_url):
+          status = "completed"
+          summary = "分析报告已生成"
+      elif no_changes and not report_text:
+          status = "completed"
+          summary = "任务完成但未生成分析文档或代码改动。请明确要求写入 docs/analysis-*.md 后重试。"
+      elif mode == "iterate":
+          status = "pr_created"
+          summary = "Branch updated on existing MR"
+      else:
+          status = "pr_created"
+          summary = "Merge request created" if pr_url else "变更已推送"
+
+      if report_text and not summary.startswith("分析"):
+          summary = "分析报告已生成"
+
+      payload = {
+          "job_id": job_id,
+          "status": status,
+          "pr_url": pr_url,
+          "summary": summary,
+          "report_path": report_path,
+          "report_url": report_url,
+          "report_markdown": report_text[:12000],
+      }
+      data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+      req = urllib.request.Request(
+          os.environ["FEISHU_CALLBACK_URL"],
+          data=data,
+          headers={"Content-Type": "application/json; charset=utf-8"},
+          method="POST",
+      )
+      with urllib.request.urlopen(req, timeout=30) as resp:
+          print(resp.read().decode("utf-8", errors="replace"))
+      PY
+  after_script:
+    - |
+      if [ "$CI_JOB_STATUS" != "success" ]; then
+        curl -sS -X POST "${FEISHU_CALLBACK_URL}" \
+          -H "Content-Type: application/json" \
+          -d "{\"job_id\":\"${FEISHU_JOB_ID}\",\"status\":\"failed\",\"error\":\"pipeline failed\"}" || true
+      fi

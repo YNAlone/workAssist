@@ -8,7 +8,6 @@ from .cards import build_confirm_plan_card, build_task_card
 from .config import Settings
 from .feishu import FeishuClient
 from .feishu_docs import FeishuDocService
-from .github import GitHubClient
 from .llm import IntentResult, LLMClient
 from .models import (
     ConversationSession,
@@ -29,6 +28,7 @@ from .parser import (
 from .policy import Policy, PolicyError
 from .session_store import SessionStore
 from .store import TaskStore
+from .executor_dispatcher import ExecutorDispatcher
 
 
 class Orchestrator:
@@ -39,7 +39,7 @@ class Orchestrator:
         self.sessions = SessionStore(settings.session_store_path, settings.session_ttl_minutes)
         self.audit = AuditLogger(settings.audit_log_path)
         self.feishu = FeishuClient(settings)
-        self.github = GitHubClient(settings)
+        self.executor = ExecutorDispatcher(settings, self.policy)
         self.llm = LLMClient(settings)
 
     def _append_audit(self, task: Task, event: str, **payload: object) -> None:
@@ -100,6 +100,9 @@ class Orchestrator:
 
         task = Task.from_request(request, work_branch=work_branch, risk_level=risk_level)
         task.id = task_id
+        task.executor = request.executor
+        task.delivery = request.delivery
+        task = self.executor.prepare_task(task)
         self._append_audit(
             task,
             "task.received",
@@ -128,7 +131,7 @@ class Orchestrator:
         self._sync_session_from_task(task, SessionStatus.RUNNING)
 
         try:
-            dispatch_result = self.github.dispatch_workflow(task)
+            dispatch_result = self.executor.dispatch(task)
             task.status = TaskStatus.DISPATCHED
             task.dispatch_id = str(dispatch_result.get("job_id", task.id))
             task = self.store.save(task)
@@ -186,6 +189,13 @@ class Orchestrator:
             task.pr_url = payload.get("pr_url", task.pr_url)
         task.commit_sha = payload.get("commit_sha", task.commit_sha)
         task.error = payload.get("error", "")
+        if payload.get("executor"):
+            task.executor = str(payload.get("executor") or task.executor)
+        if payload.get("delivery"):
+            task.delivery = str(payload.get("delivery") or task.delivery)
+
+        diff_stat = str(payload.get("diff_stat") or "")
+        worktree_path = str(payload.get("worktree_path") or "")
 
         report_markdown = str(payload.get("report_markdown") or "")
         report_url = str(payload.get("report_url") or "")
@@ -208,6 +218,14 @@ class Orchestrator:
             session_status = SessionStatus.AWAITING_FEEDBACK
         else:
             session_status = None
+
+        delivery = str(payload.get("delivery") or task.delivery)
+        if worktree_path and delivery == "local_only" and worktree_path not in task.summary:
+            task.summary = (task.summary + f"\n本机工作区：{worktree_path}").strip()
+        if diff_stat:
+            preview = diff_stat if len(diff_stat) <= 800 else diff_stat[:800] + "…"
+            if preview not in task.summary:
+                task.summary = (task.summary + f"\n\n变更摘要：\n{preview}").strip()
 
         task = self.store.save(task)
         self._append_audit(task, "runner.callback", status=status)
@@ -417,6 +435,10 @@ class Orchestrator:
             session.work_branch = intent.work_branch_hint
         if intent.prompt:
             session.prompt = intent.prompt
+        if intent.executor:
+            session.executor = intent.executor
+        if intent.delivery:
+            session.delivery = intent.delivery
 
     def _apply_intent(
         self,
@@ -545,6 +567,8 @@ class Orchestrator:
             mode=mode,
             parent_task_id=parent_task_id,
             iteration=iteration,
+            executor=session.executor,
+            delivery=session.delivery,
         )
         task = self.create_task(request)
         session.current_task_id = task.id

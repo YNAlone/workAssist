@@ -27,6 +27,9 @@ class Settings:
     github_workflow_id: str
     github_api_base: str
     github_dispatch_ref: str
+    gitlab_token: str
+    gitlab_api_base: str
+    gitlab_dispatch_ref: str
     policy_file: Path
     task_store_path: Path
     audit_log_path: Path
@@ -35,6 +38,14 @@ class Settings:
     orch_llm_model: str
     session_store_path: Path
     session_ttl_minutes: int
+    local_worker_enabled: bool
+    local_worker_token: str
+    local_worker_queue_path: Path
+    local_worker_poll_seconds: int
+    local_worker_orchestrator_url: str
+    anthropic_api_key: str
+    anthropic_base_url: str
+    anthropic_model: str
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -54,6 +65,9 @@ class Settings:
             github_workflow_id=os.getenv("GITHUB_WORKFLOW_ID", "feishu-claude.yml"),
             github_api_base=os.getenv("GITHUB_API_BASE", "https://api.github.com"),
             github_dispatch_ref=os.getenv("GITHUB_DISPATCH_REF", ""),
+            gitlab_token=os.getenv("GITLAB_TOKEN", ""),
+            gitlab_api_base=os.getenv("GITLAB_API_BASE", "http://10.27.249.150:8888/api/v4"),
+            gitlab_dispatch_ref=os.getenv("GITLAB_DISPATCH_REF", ""),
             policy_file=Path(os.getenv("POLICY_FILE", root / "config/policy.example.json")),
             task_store_path=Path(os.getenv("TASK_STORE_PATH", root / "data/tasks.json")),
             audit_log_path=Path(os.getenv("AUDIT_LOG_PATH", root / "data/audit.log")),
@@ -65,4 +79,17 @@ class Settings:
             orch_llm_model=os.getenv("ORCH_LLM_MODEL", "kimi-for-coding"),
             session_store_path=Path(os.getenv("SESSION_STORE_PATH", root / "data/sessions.json")),
             session_ttl_minutes=int(os.getenv("SESSION_TTL_MINUTES", "120")),
+            local_worker_enabled=_bool(os.getenv("LOCAL_WORKER_ENABLED"), False),
+            local_worker_token=os.getenv("LOCAL_WORKER_TOKEN", ""),
+            local_worker_queue_path=Path(
+                os.getenv("LOCAL_WORKER_QUEUE_PATH", root / "data/local_worker_queue.json")
+            ),
+            local_worker_poll_seconds=int(os.getenv("LOCAL_WORKER_POLL_SECONDS", "5")),
+            local_worker_orchestrator_url=os.getenv("LOCAL_WORKER_ORCHESTRATOR_URL", "").rstrip("/"),
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY")
+            or os.getenv("KIMI_API_KEY")
+            or os.getenv("ORCH_LLM_API_KEY")
+            or "",
+            anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.kimi.com/coding/"),
+            anthropic_model=os.getenv("ANTHROPIC_MODEL", "kimi-for-coding"),
         )

@@ -3,26 +3,26 @@ from __future__ import annotations
 from typing import Any
 
 from feishu_claude_automation.config import Settings
-from feishu_claude_automation.github import GitHubClient
 from feishu_claude_automation.models import Task, TaskMode, TaskRequest, TaskStatus, RiskLevel
 from feishu_claude_automation.policy import Policy
+from feishu_claude_automation.vcs import VcsDispatcher
 from agent_platform.models import PlatformTask, PlatformTaskStatus, utc_now
 from agent_platform.store import PlatformStore
 
 
 class CodeAgentExecutor:
-    """Wraps existing GitHub Actions dispatch as a platform executor."""
+    """Wraps GitHub Actions / GitLab CI dispatch as a platform executor."""
 
     agent_id = "code"
 
     def __init__(self, settings: Settings, store: PlatformStore, policy: Policy | None = None) -> None:
         self.settings = settings
         self.store = store
-        self.policy = policy or Policy.from_file(settings.policy_file)
-        self.github = GitHubClient(settings)
+        self.policy = policy or Policy.load(settings.policy_file)
+        self.vcs = VcsDispatcher(settings, self.policy)
 
     def can_handle(self, task: PlatformTask) -> bool:
-        return task.agent_id in {"code", "github_actions"} or task.inputs.get("repo")
+        return task.agent_id in {"code", "github_actions", "gitlab_ci"} or task.inputs.get("repo")
 
     def _to_legacy_task(self, task: PlatformTask) -> Task:
         inputs = task.inputs
@@ -59,7 +59,7 @@ class CodeAgentExecutor:
 
     def dispatch(self, task: PlatformTask) -> None:
         legacy = self._to_legacy_task(task)
-        result = self.github.dispatch_workflow(legacy)
+        result = self.vcs.dispatch(legacy)
         task.status = PlatformTaskStatus.RUNNING
         task.result = {"dispatch": result, "work_branch": legacy.work_branch, "repo": legacy.repo}
         task.updated_at = utc_now()

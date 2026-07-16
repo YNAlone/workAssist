@@ -29,6 +29,18 @@ class TaskMode(str, Enum):
     ITERATE = "iterate"
 
 
+class TaskDelivery(str, Enum):
+    PUSH = "push"
+    LOCAL_ONLY = "local_only"
+
+
+class TaskExecutor(str, Enum):
+    VCS = "vcs"
+    LOCAL_WORKER = "local_worker"
+    GITHUB_ACTIONS = "github_actions"
+    GITLAB_CI = "gitlab_ci"
+
+
 class SessionStatus(str, Enum):
     IDLE = "idle"
     CLARIFYING = "clarifying"
@@ -57,6 +69,8 @@ class TaskRequest:
     mode: TaskMode = TaskMode.CREATE
     parent_task_id: str = ""
     iteration: int = 0
+    executor: str = ""
+    delivery: str = ""
 
 
 @dataclass
@@ -85,6 +99,8 @@ class Task:
     parent_task_id: str = ""
     iteration: int = 0
     mode: TaskMode = TaskMode.CREATE
+    executor: str = ""
+    delivery: str = ""
 
     @classmethod
     def from_request(cls, request: TaskRequest, work_branch: str, risk_level: RiskLevel) -> Task:
@@ -104,6 +120,8 @@ class Task:
             parent_task_id=request.parent_task_id,
             iteration=request.iteration,
             mode=request.mode,
+            executor=request.executor,
+            delivery=request.delivery,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,6 +129,8 @@ class Task:
         data["status"] = self.status.value
         data["risk_level"] = self.risk_level.value
         data["mode"] = self.mode.value if isinstance(self.mode, TaskMode) else self.mode
+        data["executor"] = self.executor
+        data["delivery"] = self.delivery
         return data
 
     @classmethod
@@ -141,6 +161,8 @@ class Task:
             parent_task_id=data.get("parent_task_id", ""),
             iteration=int(data.get("iteration", 0)),
             mode=TaskMode(mode_raw) if not isinstance(mode_raw, TaskMode) else mode_raw,
+            executor=data.get("executor", ""),
+            delivery=data.get("delivery", ""),
         )
 
 
@@ -174,6 +196,8 @@ class ConversationSession:
     prompt: str = ""
     current_task_id: str = ""
     pr_url: str = ""
+    executor: str = ""
+    delivery: str = ""
     messages: list[SessionMessage] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -193,6 +217,8 @@ class ConversationSession:
             "prompt": self.prompt,
             "current_task_id": self.current_task_id,
             "pr_url": self.pr_url,
+            "executor": self.executor,
+            "delivery": self.delivery,
             "messages": [msg.to_dict() for msg in self.messages],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -211,6 +237,8 @@ class ConversationSession:
             prompt=data.get("prompt", ""),
             current_task_id=data.get("current_task_id", ""),
             pr_url=data.get("pr_url", ""),
+            executor=data.get("executor", ""),
+            delivery=data.get("delivery", ""),
             messages=[SessionMessage.from_dict(item) for item in data.get("messages", [])],
             created_at=data.get("created_at", utc_now()),
             updated_at=data.get("updated_at", utc_now()),

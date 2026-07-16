@@ -42,6 +42,8 @@ def parse_command(text: str) -> TaskRequest | None:
         chat_id=fields.get("chat", ""),
         issue=fields.get("issue", ""),
         work_branch=fields.get("work_branch", ""),
+        executor=fields.get("executor", ""),
+        delivery=fields.get("delivery", ""),
     )
 
 

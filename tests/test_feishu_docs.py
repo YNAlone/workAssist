@@ -22,6 +22,9 @@ def build_settings(**overrides) -> Settings:
         github_workflow_id="feishu-claude.yml",
         github_api_base="https://api.github.com",
         github_dispatch_ref="dev_test",
+        gitlab_token="",
+        gitlab_api_base="http://10.27.249.150:8888/api/v4",
+        gitlab_dispatch_ref="main",
         policy_file=__import__("pathlib").Path("/tmp/policy.json"),
         task_store_path=__import__("pathlib").Path("/tmp/tasks.json"),
         audit_log_path=__import__("pathlib").Path("/tmp/audit.log"),
@@ -30,6 +33,14 @@ def build_settings(**overrides) -> Settings:
         orch_llm_model="kimi-for-coding",
         session_store_path=__import__("pathlib").Path("/tmp/sessions.json"),
         session_ttl_minutes=120,
+        local_worker_enabled=False,
+        local_worker_token="",
+        local_worker_queue_path=__import__("pathlib").Path("/tmp/local_worker_queue.json"),
+        local_worker_poll_seconds=5,
+        local_worker_orchestrator_url="",
+        anthropic_api_key="",
+        anthropic_base_url="https://api.kimi.com/coding/",
+        anthropic_model="kimi-for-coding",
     )
     return base if not overrides else Settings(**{**base.__dict__, **overrides})
 

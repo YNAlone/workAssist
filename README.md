@@ -38,6 +38,35 @@ flowchart LR
 - 兼容结构化 `/ai-fix` 命令。
 - 飞书事件 / 卡片操作 / Runner 回调 / 手动任务端点。
 - 仓库白名单、受保护分支、风险审批、并发上限。
+- **可选本机 Worker**：不经过 GitHub Actions / GitLab CI，在本机工作区直接运行 Claude Code（见下文）。
+
+## 执行方式（可选）
+
+除默认的 **GitHub Actions / GitLab CI** 外，可启用 **本机 Worker**：
+
+| 执行器 | 说明 |
+|--------|------|
+| `github_actions` / `gitlab_ci` | 远程 CI 跑 Claude Code（默认） |
+| `local_worker` | 本机进程跑 Claude Code |
+
+| 交付方式 | 说明 |
+|----------|------|
+| `push`（默认） | commit → push → 开 PR/MR |
+| `local_only` | 只改本机工作区，不推远程 |
+
+选择优先级：任务字段 / 飞书自然语言 → `repo_catalog` → `default_executor` / 默认 `push`。
+
+自然语言示例：
+
+```text
+用户：用本机 worker 在 workAssist 上基于 dev_test 修一下退款逻辑，先不要推远程
+```
+
+结构化命令：
+
+```text
+/ai-fix repo=workAssist branch=dev_test executor=local_worker delivery=local_only desc="修复退款舍入"
+```
 
 ## 对话示例
 
@@ -62,6 +91,8 @@ flowchart LR
 - `branch`：必填，基于哪个已有分支开发（例如 `dev_test`）。
 - `desc`：必填，除非字段之后的剩余文本包含提示词。
 - `work_branch`：可选，指定工作分支名。
+- `executor`：可选，`local_worker` / `github_actions` / `gitlab_ci`。
+- `delivery`：可选，`push` / `local_only`。
 
 自然语言对话同样需要明确「基于哪个已有分支」；未指定时机器人会追问，不会自动默认 `main`。
 
@@ -83,6 +114,22 @@ flowchart LR
 - `TASK_STORE_PATH`：JSON 任务状态路径，默认为 `data/tasks.json`。
 - `SESSION_STORE_PATH`：会话状态路径，默认为 `data/sessions.json`。
 - `SESSION_TTL_MINUTES`：会话超时分钟数，默认 `120`。
+- `LOCAL_WORKER_ENABLED`：是否允许本机 Worker 执行器。
+- `LOCAL_WORKER_TOKEN`：Worker 入队/claim API 的 Bearer Token。
+- `LOCAL_WORKER_QUEUE_PATH`：本机任务队列 JSON 路径。
+- `LOCAL_WORKER_ORCHESTRATOR_URL`：远程 Worker 模式下 Orchestrator 的地址（留空则读本地队列文件）。
+- `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`：本机 Worker 调用 Claude Code 的凭据。
+
+在 `config/policy.example.json` 的 `repo_catalog` 中为仓库配置 `executor`、`local_path`、`default_delivery`：
+
+```json
+"YNAlone/workAssist": {
+  "provider": "github",
+  "executor": "local_worker",
+  "local_path": "/data/repos/workAssist",
+  "default_delivery": "push"
+}
+```
 
 ## 本地运行
 
@@ -104,6 +151,37 @@ curl -X POST http://localhost:8080/tasks \
   -d '{"repo":"owner/repo","base_branch":"main","prompt":"Fix refund rounding bug","requester_id":"demo","chat_id":"oc_demo"}'
 ```
 
+### 本机 Worker
+
+1. 在 `.env` 中设置 `LOCAL_WORKER_ENABLED=true`、`LOCAL_WORKER_TOKEN`、`ANTHROPIC_API_KEY`，并在策略里为目标仓库配置 `local_path`。
+2. 启动 Orchestrator（见上）。
+3. 另开终端启动 Worker：
+
+```bash
+./scripts/run_local_worker.sh
+```
+
+Worker 从队列领取任务 → checkout → 运行 `claude` → 按 `delivery` 推远程或仅回执本机 diff，并回调 `/callbacks/runner`。
+
+#### 远程 Worker（Orchestrator 在服务器，Worker 在本机）
+
+Orchestrator 与 Worker 可不在同一台机器。本机 Worker 设置：
+
+```bash
+LOCAL_WORKER_ENABLED=true
+LOCAL_WORKER_TOKEN=<与服务器相同的 token>
+LOCAL_WORKER_ORCHESTRATOR_URL=http://<orchestrator-host>:8080
+# 本机策略里的 local_path 指向本机仓库路径
+```
+
+此时 Worker 通过 HTTP 调用服务器的 `/v1/worker/jobs/claim` 领任务，执行后回调服务器的 `/callbacks/runner`。
+
+调试 API（需 `Authorization: Bearer <LOCAL_WORKER_TOKEN>`）：
+
+- `POST /v1/worker/jobs` — 手动入队
+- `POST /v1/worker/jobs/claim` — 领取一条任务
+- `POST /v1/worker/jobs/complete` — 标记任务完成（远程 Worker 用）
+
 ## GitHub 配置
 
 将 `templates/github/feishu-claude.yml` 复制到每个目标仓库的以下路径：
@@ -124,6 +202,36 @@ curl -X POST http://localhost:8080/tasks \
 - 勾选 **Allow GitHub Actions to create and approve pull requests**（未配置 `GH_PAT` 时必需）
 
 Orchestrator 会使用 `job_id`、`prompt`、`base_branch`、`work_branch`、`callback_url`、`mode` 作为输入来调度此工作流。
+
+## GitLab 配置
+
+当前策略已登记以下 GitLab 仓库（见 `config/policy.example.json` 的 `allowed_repos` / `repo_catalog`）：
+
+- `thinkingdata/official-web-frontend`
+- `thinkingdata/official-web-server`
+
+将 `templates/gitlab/feishu-claude.yml` 复制到每个目标仓库根目录：
+
+```text
+.gitlab-ci.yml
+```
+
+在 Orchestrator `.env` 中配置：
+
+- `GITLAB_TOKEN`：具备 `api` 权限的 Personal Access Token / Project Access Token（用于创建 Pipeline 与 MR）
+- `GITLAB_API_BASE`：例如 `http://10.27.249.150:8888/api/v4`
+- `GITLAB_DISPATCH_REF`：包含 `.gitlab-ci.yml` 的分支（如 `main`）
+
+在目标 GitLab 仓库 CI/CD Variables 中配置：
+
+- `ANTHROPIC_API_KEY`（Kimi Key）
+- `GITLAB_TOKEN`（供 Runner push 分支 / 创建 Merge Request；可与 Orchestrator 使用同一枚 token，或更窄权限的 project token）
+
+飞书侧可用短名引用，例如：
+
+```text
+/ai-fix repo=official-web-frontend branch=main desc="修复首页加载问题"
+```
 
 ## 飞书配置
 

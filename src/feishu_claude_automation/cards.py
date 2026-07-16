@@ -3,6 +3,27 @@ from __future__ import annotations
 from .models import ConversationSession, Task, TaskStatus
 
 
+EXECUTOR_LABELS = {
+    "local_worker": "本机 Worker",
+    "github_actions": "GitHub Actions",
+    "gitlab_ci": "GitLab CI",
+    "vcs": "VCS CI",
+}
+
+DELIVERY_LABELS = {
+    "push": "推远程并开 PR/MR",
+    "local_only": "仅本机工作区",
+}
+
+
+def _executor_label(value: str) -> str:
+    return EXECUTOR_LABELS.get(value, value or "自动")
+
+
+def _delivery_label(value: str) -> str:
+    return DELIVERY_LABELS.get(value, value or "推远程并开 PR/MR")
+
+
 def build_task_card(task: Task) -> dict:
     status_label = {
         TaskStatus.RECEIVED: "已接收",
@@ -16,6 +37,8 @@ def build_task_card(task: Task) -> dict:
     }[task.status]
 
     mode_label = "迭代" if task.mode.value == "iterate" else "新建"
+    executor_label = _executor_label(task.executor)
+    delivery_label = _delivery_label(task.delivery)
     elements: list[dict] = [
         {
             "tag": "div",
@@ -24,6 +47,8 @@ def build_task_card(task: Task) -> dict:
                 "content": (
                     f"**任务 ID**: `{task.id}`\n"
                     f"**模式**: {mode_label}\n"
+                    f"**执行方式**: {executor_label}\n"
+                    f"**交付方式**: {delivery_label}\n"
                     f"**仓库**: `{task.repo}`\n"
                     f"**基线分支**: `{task.base_branch}`\n"
                     f"**工作分支**: `{task.work_branch}`\n"
@@ -111,6 +136,8 @@ def build_task_card(task: Task) -> dict:
 
 
 def build_confirm_plan_card(session: ConversationSession) -> dict:
+    executor_label = _executor_label(session.executor)
+    delivery_label = _delivery_label(session.delivery)
     elements: list[dict] = [
         {
             "tag": "div",
@@ -118,6 +145,8 @@ def build_confirm_plan_card(session: ConversationSession) -> dict:
                 "tag": "lark_md",
                 "content": (
                     f"**会话 ID**: `{session.id}`\n"
+                    f"**执行方式**: {executor_label}\n"
+                    f"**交付方式**: {delivery_label}\n"
                     f"**仓库**: `{session.repo}`\n"
                     f"**基线分支**: `{session.base_branch}`\n"
                     f"**工作分支**: `{session.work_branch or '(自动生成)'}`\n"
