@@ -23,6 +23,10 @@ on:
         description: create a new branch/PR or iterate on an existing branch
         required: false
         default: create
+      model:
+        description: Kimi model id (kimi-for-coding or k3)
+        required: false
+        default: kimi-for-coding
 
 permissions:
   contents: write
@@ -60,8 +64,8 @@ jobs:
         uses: anthropics/claude-code-action@v1
         env:
           ANTHROPIC_BASE_URL: https://api.kimi.com/coding/
-          ANTHROPIC_MODEL: kimi-for-coding
-          ANTHROPIC_SMALL_FAST_MODEL: kimi-for-coding
+          ANTHROPIC_MODEL: ${{ inputs.model }}
+          ANTHROPIC_SMALL_FAST_MODEL: ${{ inputs.model }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           show_full_output: true
@@ -77,7 +81,7 @@ jobs:
             5. 当前已在正确的工作分支；写报告时不要切回基线分支，也不要调用飞书 API。文档回传由 CI / Orchestrator 自动完成。
           claude_args: |
             --max-turns 50
-            --model kimi-for-coding
+            --model ${{ inputs.model }}
             --allowedTools Edit,Read,Write,Bash
 
       - name: Locate analysis report

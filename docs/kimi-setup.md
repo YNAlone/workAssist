@@ -13,9 +13,27 @@
 |------|------|
 | `ORCH_LLM_API_KEY` | Kimi API Key（`sk-kimi-...`） |
 | `ORCH_LLM_BASE_URL` | 默认 `https://api.kimi.com/coding/` |
-| `ORCH_LLM_MODEL` | 默认 `kimi-for-coding` |
+| `ORCH_LLM_MODEL` | 意图解析模型，可选 `kimi-for-coding`（默认）或 `k3`（别名 `K3`） |
+| `ANTHROPIC_MODEL` | CI / 本机 Worker 执行模型，可选同上；调度时会传给 workflow |
 
 `AUTOMATION_DRY_RUN=true` 时不会调用 LLM，使用内置 mock 意图解析。
+
+## 可选模型
+
+| 配置值 | API Model ID | 说明 |
+|--------|--------------|------|
+| `kimi-for-coding` | `kimi-for-coding` | Kimi K2.7 Code，默认，全员可用 |
+| `k3` / `K3` | `k3` | Kimi K3，需 Moderato 及以上套餐 |
+| `kimi-for-coding-highspeed` | `kimi-for-coding-highspeed` | K2.7 高速版，需 Allegretto 及以上 |
+
+示例：两处都切到 K3：
+
+```bash
+ORCH_LLM_MODEL=k3
+ANTHROPIC_MODEL=k3
+```
+
+也可只改其中一处（例如意图解析用 `kimi-for-coding`，改代码用 `k3`）。
 
 ## GitHub Secrets 配置
 
@@ -32,11 +50,7 @@ API 地址已在 workflow 中配置，无需额外 Secret：
 https://api.kimi.com/coding/
 ```
 
-模型 ID：
-
-```text
-kimi-for-coding
-```
+模型由 Orchestrator 的 `ANTHROPIC_MODEL` 通过 workflow input `model` 传入（默认 `kimi-for-coding`）。
 
 ## 命令行添加 Secret（可选）
 

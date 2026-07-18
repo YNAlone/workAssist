@@ -109,7 +109,7 @@ flowchart LR
 - `GITHUB_WORKFLOW_ID`：目标仓库中的工作流文件名，例如 `feishu-claude.yml`。
 - `CALLBACK_BASE_URL`：本 Orchestrator 的公网 URL，供 Runner 回调使用。
 - `ORCH_LLM_API_KEY`：Orchestrator 自然语言意图解析用的 Kimi API Key。
-- `ORCH_LLM_BASE_URL` / `ORCH_LLM_MODEL`：默认指向 Kimi Coding API。
+- `ORCH_LLM_BASE_URL` / `ORCH_LLM_MODEL`：Kimi Coding API；模型可选 `kimi-for-coding`（默认）或 `k3`。
 - `POLICY_FILE`：仓库策略文件路径，默认为 `config/policy.example.json`。
 - `TASK_STORE_PATH`：JSON 任务状态路径，默认为 `data/tasks.json`。
 - `SESSION_STORE_PATH`：会话状态路径，默认为 `data/sessions.json`。
@@ -118,7 +118,7 @@ flowchart LR
 - `LOCAL_WORKER_TOKEN`：Worker 入队/claim API 的 Bearer Token。
 - `LOCAL_WORKER_QUEUE_PATH`：本机任务队列 JSON 路径。
 - `LOCAL_WORKER_ORCHESTRATOR_URL`：远程 Worker 模式下 Orchestrator 的地址（留空则读本地队列文件）。
-- `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`：本机 Worker 调用 Claude Code 的凭据。
+- `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`：本机 Worker / CI 调度用模型（`kimi-for-coding` 或 `k3`）。
 
 在 `config/policy.example.json` 的 `repo_catalog` 中为仓库配置 `executor`、`local_path`、`default_delivery`：
 

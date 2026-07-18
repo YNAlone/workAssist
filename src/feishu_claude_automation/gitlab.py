@@ -54,6 +54,8 @@ class GitLabClient:
                 {"key": "FEISHU_WORK_BRANCH", "value": task.work_branch},
                 {"key": "FEISHU_CALLBACK_URL", "value": callback_url},
                 {"key": "FEISHU_MODE", "value": task.mode.value},
+                {"key": "ANTHROPIC_MODEL", "value": self.settings.anthropic_model},
+                {"key": "ANTHROPIC_SMALL_FAST_MODEL", "value": self.settings.anthropic_model},
             ],
         }
         result = self._request("POST", url, payload)

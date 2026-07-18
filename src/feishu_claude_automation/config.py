@@ -4,11 +4,37 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# Kimi Code model IDs: https://www.kimi.com/code/docs/en/kimi-code/models
+ALLOWED_KIMI_MODELS = ("kimi-for-coding", "k3", "kimi-for-coding-highspeed")
+_KIMI_MODEL_ALIASES = {
+    "kimi-for-coding": "kimi-for-coding",
+    "kimi-for-coding-highspeed": "kimi-for-coding-highspeed",
+    "k3": "k3",
+    "kimi-k3": "k3",
+    "kimi_k3": "k3",
+}
+
 
 def _bool(value: str | None, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_kimi_model(value: str | None, default: str = "kimi-for-coding") -> str:
+    """Normalize user-facing model names (e.g. K3) to Kimi Code API IDs."""
+    raw = (value or "").strip()
+    if not raw:
+        return default
+    canonical = _KIMI_MODEL_ALIASES.get(raw.lower())
+    if canonical:
+        return canonical
+    if raw in ALLOWED_KIMI_MODELS:
+        return raw
+    raise ValueError(
+        f"Unsupported model {raw!r}. Choose one of: {', '.join(ALLOWED_KIMI_MODELS)} "
+        "(aliases: K3, kimi-k3)."
+    )
 
 
 @dataclass(frozen=True)
@@ -76,7 +102,7 @@ class Settings:
             or os.getenv("KIMI_API_KEY")
             or "",
             orch_llm_base_url=os.getenv("ORCH_LLM_BASE_URL", "https://api.kimi.com/coding/"),
-            orch_llm_model=os.getenv("ORCH_LLM_MODEL", "kimi-for-coding"),
+            orch_llm_model=normalize_kimi_model(os.getenv("ORCH_LLM_MODEL"), "kimi-for-coding"),
             session_store_path=Path(os.getenv("SESSION_STORE_PATH", root / "data/sessions.json")),
             session_ttl_minutes=int(os.getenv("SESSION_TTL_MINUTES", "120")),
             local_worker_enabled=_bool(os.getenv("LOCAL_WORKER_ENABLED"), False),
@@ -91,5 +117,5 @@ class Settings:
             or os.getenv("ORCH_LLM_API_KEY")
             or "",
             anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.kimi.com/coding/"),
-            anthropic_model=os.getenv("ANTHROPIC_MODEL", "kimi-for-coding"),
+            anthropic_model=normalize_kimi_model(os.getenv("ANTHROPIC_MODEL"), "kimi-for-coding"),
         )

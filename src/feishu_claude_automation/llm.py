@@ -153,7 +153,7 @@ class LLMClient:
 
         payload = {
             "model": self.settings.orch_llm_model,
-            # kimi-for-coding only accepts temperature=1
+            # Kimi Coding models expect temperature=1 for kimi-for-coding; keep 1 for k3 too.
             "temperature": 1,
             "messages": messages,
         }

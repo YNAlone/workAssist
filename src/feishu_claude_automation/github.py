@@ -51,6 +51,7 @@ class GitHubClient:
                 "work_branch": task.work_branch,
                 "callback_url": callback_url,
                 "mode": task.mode.value,
+                "model": self.settings.anthropic_model,
             },
         }
         self._request("POST", url, payload)
