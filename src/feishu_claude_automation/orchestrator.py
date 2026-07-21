@@ -25,6 +25,7 @@ from .parser import (
     parse_command,
     strip_feishu_mentions,
 )
+from .message_content import enrich_message_for_llm, parse_feishu_event_message
 from .policy import Policy, PolicyError
 from .session_store import SessionStore
 from .store import TaskStore
@@ -342,6 +343,7 @@ class Orchestrator:
             return {"ignored": True, "reason": "duplicate_event", "key": dedup_key}
 
         text = extract_message_text(payload)
+        parsed_message = enrich_message_for_llm(parse_feishu_event_message(payload), self.feishu)
         event_body = payload.get("event", {})
         sender = event_body.get("sender", {}).get("sender_id", {})
         requester_id = sender.get("open_id") or sender.get("user_id") or ""
@@ -361,6 +363,7 @@ class Orchestrator:
             requester_id=requester_id,
             chat_id=chat_id,
             message_id=message_id,
+            parsed_message=parsed_message,
         )
 
     def _handle_natural_language(
@@ -370,10 +373,20 @@ class Orchestrator:
         requester_id: str,
         chat_id: str,
         message_id: str,
+        parsed_message=None,
     ) -> dict:
         cleaned = strip_feishu_mentions(text)
-        if not cleaned:
+        llm_text = ""
+        llm_content: str | list | None = None
+        if parsed_message is not None:
+            llm_text = parsed_message.to_llm_text()
+            llm_content = parsed_message.to_llm_content()
+            if not cleaned:
+                cleaned = strip_feishu_mentions(parsed_message.plain_text())
+        if not cleaned and (parsed_message is None or parsed_message.is_empty()):
             return {"ignored": True, "reason": "empty message"}
+        if not cleaned:
+            cleaned = llm_text or "[non-text feishu message]"
 
         session = self.sessions.get_active(chat_id, requester_id)
         if not session:
@@ -418,7 +431,8 @@ class Orchestrator:
 
         try:
             intent = self.llm.interpret(
-                user_text=cleaned,
+                user_text=llm_text or cleaned,
+                user_content=llm_content,
                 session=session,
                 allowed_repos=self.policy.allowed_repos,
                 default_base_branch=self.policy.default_base_branch,
@@ -433,7 +447,7 @@ class Orchestrator:
             return {"session_id": session.id, "error": str(exc)}
 
         self._merge_intent_into_session(session, intent)
-        session.append_message("user", cleaned)
+        session.append_message("user", llm_text or cleaned)
         if intent.reply_to_user:
             session.append_message("assistant", intent.reply_to_user)
         self.sessions.save(session)

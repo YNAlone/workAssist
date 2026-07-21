@@ -3,7 +3,17 @@ from __future__ import annotations
 import json
 import re
 
+from .message_content import extract_message_text
 from .models import TaskRequest
+
+__all__ = [
+    "FIELD_PATTERN",
+    "extract_message_text",
+    "looks_like_cancel",
+    "looks_like_confirmation",
+    "parse_command",
+    "strip_feishu_mentions",
+]
 
 
 FIELD_PATTERN = re.compile(r'(\w+)=(".*?"|\'.*?\'|\S+)')
@@ -45,19 +55,6 @@ def parse_command(text: str) -> TaskRequest | None:
         executor=fields.get("executor", ""),
         delivery=fields.get("delivery", ""),
     )
-
-
-def extract_message_text(payload: dict) -> str:
-    event = payload.get("event", {})
-    message = event.get("message", {})
-    content = message.get("content", "")
-    if isinstance(content, str):
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            return content
-        return parsed.get("text", content)
-    return str(content)
 
 
 def looks_like_confirmation(text: str) -> bool:

@@ -90,6 +90,7 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
     - 缺仓库或基线分支 → action=clarify，missing_fields 补齐后追问。
     - 信息够用 → action=confirm_plan；prompt 写明：在目标仓库基于用户描述（及引用文档要点）产出完整 Markdown 方案，保存为 docs/analysis-*.md，不要只在对话回复；若需代码改动可另说明，但本任务以文档交付为主。
     - reply_to_user 只做一两句计划确认（例如将调度写方案文档）。
+12. 用户消息可能是结构化附件信封（含 text/link/image/file/doc 等 part）。必须综合全部 part 理解意图；doc part 若含 document body 应优先采用；图片若仅有 image_key 而无像素，不要臆造图片内容。
 """
 
 
@@ -230,6 +231,7 @@ class LLMClient:
         session: ConversationSession,
         allowed_repos: list[str],
         default_base_branch: str,
+        user_content: str | list[dict[str, Any]] | None = None,
     ) -> IntentResult:
         if self.settings.dry_run or not self.settings.orch_llm_api_key:
             return self._mock_intent(user_text=user_text, session=session, allowed_repos=allowed_repos)
@@ -260,7 +262,7 @@ class LLMClient:
         for item in session.messages[-12:]:
             role = "assistant" if item.role == "assistant" else "user"
             messages.append({"role": role, "content": item.content})
-        messages.append({"role": "user", "content": user_text})
+        messages.append({"role": "user", "content": user_content if user_content is not None else user_text})
 
         payload = {
             "model": self.settings.orch_llm_model,
