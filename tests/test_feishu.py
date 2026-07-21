@@ -22,7 +22,7 @@ def build_settings(**overrides) -> Settings:
         github_api_base="https://api.github.com",
         github_dispatch_ref="dev_test",
         gitlab_token="",
-        gitlab_api_base="http://10.27.249.150:8888/api/v4",
+        gitlab_api_base="https://gitlab.thinkingdata.cn/api/v4",
         gitlab_dispatch_ref="main",
         policy_file=__import__("pathlib").Path("/tmp/policy.json"),
         task_store_path=__import__("pathlib").Path("/tmp/tasks.json"),

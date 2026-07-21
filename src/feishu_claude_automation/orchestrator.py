@@ -29,6 +29,7 @@ from .policy import Policy, PolicyError
 from .session_store import SessionStore
 from .store import TaskStore
 from .executor_dispatcher import ExecutorDispatcher
+from .feishu_event_dedup import FeishuEventDedup
 
 
 class Orchestrator:
@@ -41,6 +42,20 @@ class Orchestrator:
         self.feishu = FeishuClient(settings)
         self.executor = ExecutorDispatcher(settings, self.policy)
         self.llm = LLMClient(settings)
+        dedup_path = settings.audit_log_path.parent / "feishu_event_dedup.json"
+        self.feishu_dedup = FeishuEventDedup(dedup_path)
+
+    @staticmethod
+    def _feishu_dedup_key(payload: dict) -> str:
+        header = payload.get("header") or {}
+        event_id = str(header.get("event_id") or "").strip()
+        if event_id:
+            return f"event:{event_id}"
+        event_body = payload.get("event") or {}
+        message_id = str((event_body.get("message") or {}).get("message_id") or "").strip()
+        if message_id:
+            return f"message:{message_id}"
+        return ""
 
     def _append_audit(self, task: Task, event: str, **payload: object) -> None:
         task.audit.append({"timestamp": utc_now(), "event": event, **payload})
@@ -320,6 +335,11 @@ class Orchestrator:
         if event not in {"im.message.receive_v1", "message"}:
             self.audit.record("feishu.ignored", reason="unsupported_event", event=event)
             return {"ignored": True, "event": event}
+
+        dedup_key = self._feishu_dedup_key(payload)
+        if dedup_key and not self.feishu_dedup.try_claim(dedup_key):
+            self.audit.record("feishu.duplicate", key=dedup_key)
+            return {"ignored": True, "reason": "duplicate_event", "key": dedup_key}
 
         text = extract_message_text(payload)
         event_body = payload.get("event", {})

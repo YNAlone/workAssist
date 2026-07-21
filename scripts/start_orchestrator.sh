@@ -8,4 +8,4 @@ if [[ -f .env ]]; then
   set +a
 fi
 export PYTHONPATH=src
-exec python3 -m feishu_claude_automation.local_worker "$@"
+exec python3 -m feishu_claude_automation.server "$@"

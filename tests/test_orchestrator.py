@@ -44,7 +44,7 @@ def settings(tmp_path: Path) -> Settings:
         github_api_base="https://api.github.com",
         github_dispatch_ref="dev_test",
         gitlab_token="",
-        gitlab_api_base="http://10.27.249.150:8888/api/v4",
+        gitlab_api_base="https://gitlab.thinkingdata.cn/api/v4",
         gitlab_dispatch_ref="main",
         policy_file=policy_file,
         task_store_path=tmp_path / "tasks.json",
@@ -90,7 +90,7 @@ def test_gitlab_repos_in_policy_catalog():
     assert policy.provider_for("thinkingdata/official-web-frontend") == "gitlab"
     assert policy.provider_for("thinkingdata/official-web-server") == "gitlab"
     assert (
-        policy.resolve_repo("http://10.27.249.150:8888/thinkingdata/official-web-frontend")
+        policy.resolve_repo("https://gitlab.thinkingdata.cn/thinkingdata/official-web-frontend")
         == "thinkingdata/official-web-frontend"
     )
     assert policy.resolve_repo("official-web-server") == "thinkingdata/official-web-server"
@@ -118,7 +118,7 @@ def test_dispatch_routes_gitlab_repos(tmp_path: Path):
         github_api_base="https://api.github.com",
         github_dispatch_ref="dev_test",
         gitlab_token="glpat-test",
-        gitlab_api_base="http://10.27.249.150:8888/api/v4",
+        gitlab_api_base="https://gitlab.thinkingdata.cn/api/v4",
         gitlab_dispatch_ref="main",
         policy_file=policy_file,
         task_store_path=tmp_path / "tasks.json",

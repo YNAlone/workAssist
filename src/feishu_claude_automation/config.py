@@ -92,7 +92,7 @@ class Settings:
             github_api_base=os.getenv("GITHUB_API_BASE", "https://api.github.com"),
             github_dispatch_ref=os.getenv("GITHUB_DISPATCH_REF", ""),
             gitlab_token=os.getenv("GITLAB_TOKEN", ""),
-            gitlab_api_base=os.getenv("GITLAB_API_BASE", "http://10.27.249.150:8888/api/v4"),
+            gitlab_api_base=os.getenv("GITLAB_API_BASE", "https://gitlab.thinkingdata.cn/api/v4"),
             gitlab_dispatch_ref=os.getenv("GITLAB_DISPATCH_REF", ""),
             policy_file=Path(os.getenv("POLICY_FILE", root / "config/policy.example.json")),
             task_store_path=Path(os.getenv("TASK_STORE_PATH", root / "data/tasks.json")),

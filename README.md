@@ -165,12 +165,17 @@ Worker 从队列领取任务 → checkout → 运行 `claude` → 按 `delivery`
 
 #### 远程 Worker（Orchestrator 在服务器，Worker 在本机）
 
+- 服务器：复制 `.env.orchestrator.example` → `.env`，启动 `./scripts/start_orchestrator.sh`；`LOCAL_WORKER_ORCHESTRATOR_URL` **留空**。
+- 本机 Mac：复制 `.env.local-worker.example` → `.env`，启动 `./scripts/run_local_worker.sh`。
+- 服务器 `POLICY_FILE` 建议使用 `config/policy.remote-mac-worker.json`（`local_path` 为本机 Mac 路径）。
+
 Orchestrator 与 Worker 可不在同一台机器。本机 Worker 设置：
 
 ```bash
 LOCAL_WORKER_ENABLED=true
 LOCAL_WORKER_TOKEN=<与服务器相同的 token>
 LOCAL_WORKER_ORCHESTRATOR_URL=http://<orchestrator-host>:8080
+ANTHROPIC_MODEL=k3   # 或 kimi-for-coding；见 docs/kimi-setup.md
 # 本机策略里的 local_path 指向本机仓库路径
 ```
 
@@ -219,7 +224,7 @@ Orchestrator 会使用 `job_id`、`prompt`、`base_branch`、`work_branch`、`ca
 在 Orchestrator `.env` 中配置：
 
 - `GITLAB_TOKEN`：具备 `api` 权限的 Personal Access Token / Project Access Token（用于创建 Pipeline 与 MR）
-- `GITLAB_API_BASE`：例如 `http://10.27.249.150:8888/api/v4`
+- `GITLAB_API_BASE`：例如 `https://gitlab.thinkingdata.cn/api/v4`
 - `GITLAB_DISPATCH_REF`：包含 `.gitlab-ci.yml` 的分支（如 `main`）
 
 在目标 GitLab 仓库 CI/CD Variables 中配置：

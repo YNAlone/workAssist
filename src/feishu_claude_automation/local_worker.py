@@ -45,13 +45,16 @@ class LocalWorkerRunner:
                 self.execute_job(job)
                 self.client.complete(str(job.get("job_id") or ""), status="completed")
             except Exception as exc:  # noqa: BLE001
-                self._callback(
-                    job,
-                    {
-                        "status": "failed",
-                        "error": str(exc),
-                    },
-                )
+                try:
+                    self._callback(
+                        job,
+                        {
+                            "status": "failed",
+                            "error": str(exc),
+                        },
+                    )
+                except Exception as callback_exc:  # noqa: BLE001
+                    print(f"callback failed: {callback_exc}")
                 try:
                     self.client.complete(str(job.get("job_id") or ""), status="failed")
                 except Exception as complete_exc:  # noqa: BLE001
@@ -411,8 +414,20 @@ class LocalWorkerRunner:
         created = self._http_post(f"{base}/projects/{project}/merge_requests", payload, headers=headers)
         return str(created.get("web_url") or "")
 
+    def _resolve_callback_url(self, job: dict[str, Any]) -> str:
+        callback_url = str(job.get("callback_url") or "").strip()
+        if not callback_url or not self.client.remote_mode:
+            return callback_url
+        orch = self.settings.local_worker_orchestrator_url.rstrip("/")
+        if not orch:
+            return callback_url
+        lowered = callback_url.lower()
+        if "localhost" in lowered or "127.0.0.1" in lowered:
+            return f"{orch}/callbacks/runner"
+        return callback_url
+
     def _callback(self, job: dict[str, Any], payload: dict[str, Any]) -> None:
-        callback_url = str(job.get("callback_url") or "")
+        callback_url = self._resolve_callback_url(job)
         if not callback_url:
             return
         body = {**payload, "job_id": job.get("job_id")}
