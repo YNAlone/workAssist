@@ -27,6 +27,10 @@ def build_settings(tmp_path: Path) -> Settings:
         json.dumps(
             {
                 "allowed_repos": ["acme/demo", "YNAlone/workAssist"],
+                "repo_catalog": {
+                    "acme/demo": {"local_path": str(tmp_path / "acme-demo")},
+                    "YNAlone/workAssist": {"local_path": str(tmp_path / "workassist")},
+                },
                 "protected_branches": ["main"],
                 "allowed_requesters": [],
                 "require_approval_for_risk": ["high"],

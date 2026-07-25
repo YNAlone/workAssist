@@ -30,7 +30,10 @@ class CodeAgentExecutor:
         if repo:
             repo = self.policy.resolve_repo(repo) or repo
         prompt = str(inputs.get("prompt") or task.goal)
-        base_branch = str(inputs.get("base_branch") or "").strip()
+        base_branch = self.policy.resolve_base_branch(
+            repo=repo,
+            branch_hint=str(inputs.get("base_branch") or ""),
+        )
         work_branch = str(inputs.get("work_branch") or f"ai/dev-{task.id}")
         mode_raw = str(inputs.get("mode") or TaskMode.CREATE.value)
         mode = TaskMode(mode_raw) if mode_raw in {m.value for m in TaskMode} else TaskMode.CREATE
@@ -44,11 +47,10 @@ class CodeAgentExecutor:
             chat_id=task.chat_id,
             session_id=task.job_id,
             mode=mode,
+            analysis_only=bool(inputs.get("analysis_only", False)),
         )
         if not request.repo:
             raise ValueError("code task requires inputs.repo")
-        if not request.base_branch:
-            raise ValueError("code task requires inputs.base_branch")
         self.policy.validate_request(request)
 
         legacy = Task.from_request(request, work_branch=work_branch, risk_level=RiskLevel.LOW)

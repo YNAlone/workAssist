@@ -24,7 +24,7 @@ def _delivery_label(value: str) -> str:
     return DELIVERY_LABELS.get(value, value or "推远程并开 PR/MR")
 
 
-def build_task_card(task: Task) -> dict:
+def build_task_card(task: Task, *, interactive: bool = True) -> dict:
     status_label = {
         TaskStatus.RECEIVED: "已接收",
         TaskStatus.PENDING_APPROVAL: "待审批",
@@ -38,7 +38,7 @@ def build_task_card(task: Task) -> dict:
 
     mode_label = "迭代" if task.mode.value == "iterate" else "新建"
     executor_label = _executor_label(task.executor)
-    delivery_label = _delivery_label(task.delivery)
+    delivery_label = "飞书文档（只读分析）" if task.analysis_only else _delivery_label(task.delivery)
     elements: list[dict] = [
         {
             "tag": "div",
@@ -51,7 +51,7 @@ def build_task_card(task: Task) -> dict:
                     f"**交付方式**: {delivery_label}\n"
                     f"**仓库**: `{task.repo}`\n"
                     f"**基线分支**: `{task.base_branch}`\n"
-                    f"**工作分支**: `{task.work_branch}`\n"
+                    f"**工作分支**: `{task.work_branch or '无（只读分析）'}`\n"
                     f"**风险等级**: `{task.risk_level.value}`\n"
                     f"**状态**: {status_label}\n"
                     f"**需求**: {task.prompt}"
@@ -95,7 +95,7 @@ def build_task_card(task: Task) -> dict:
         )
 
     actions: list[dict] = []
-    if task.status == TaskStatus.PENDING_APPROVAL:
+    if interactive and task.status == TaskStatus.PENDING_APPROVAL:
         actions.extend(
             [
                 {
@@ -112,7 +112,7 @@ def build_task_card(task: Task) -> dict:
                 },
             ]
         )
-    elif task.status in {TaskStatus.PR_CREATED, TaskStatus.FAILED}:
+    elif interactive and task.status in {TaskStatus.PR_CREATED, TaskStatus.FAILED}:
         actions.append(
             {
                 "tag": "button",
@@ -124,6 +124,14 @@ def build_task_card(task: Task) -> dict:
 
     if actions:
         elements.append({"tag": "action", "actions": actions})
+    elif not interactive and task.status == TaskStatus.PENDING_APPROVAL:
+        # Legacy card actions require an HTTP callback. Text confirmation works over long connection.
+        elements.append(
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "请直接回复「确认执行」或「取消」。"},
+            }
+        )
 
     return {
         "config": {"wide_screen_mode": True},
@@ -135,9 +143,9 @@ def build_task_card(task: Task) -> dict:
     }
 
 
-def build_confirm_plan_card(session: ConversationSession) -> dict:
+def build_confirm_plan_card(session: ConversationSession, *, interactive: bool = True) -> dict:
     executor_label = _executor_label(session.executor)
-    delivery_label = _delivery_label(session.delivery)
+    delivery_label = "飞书文档（只读分析）" if session.analysis_only else _delivery_label(session.delivery)
     elements: list[dict] = [
         {
             "tag": "div",
@@ -149,29 +157,39 @@ def build_confirm_plan_card(session: ConversationSession) -> dict:
                     f"**交付方式**: {delivery_label}\n"
                     f"**仓库**: `{session.repo}`\n"
                     f"**基线分支**: `{session.base_branch}`\n"
-                    f"**工作分支**: `{session.work_branch or '(自动生成)'}`\n"
+                    f"**工作分支**: `{session.work_branch or ('无（只读分析）' if session.analysis_only else '(自动生成)')}`\n"
                     f"**需求**: {session.prompt}"
                 ),
             },
         },
-        {
-            "tag": "action",
-            "actions": [
-                {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "确认执行"},
-                    "type": "primary",
-                    "value": {"action": "confirm_execute", "session_id": session.id},
-                },
-                {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "取消会话"},
-                    "type": "danger",
-                    "value": {"action": "cancel_session", "session_id": session.id},
-                },
-            ],
-        },
     ]
+    if interactive:
+        elements.append(
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "确认执行"},
+                        "type": "primary",
+                        "value": {"action": "confirm_execute", "session_id": session.id},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "取消会话"},
+                        "type": "danger",
+                        "value": {"action": "cancel_session", "session_id": session.id},
+                    },
+                ],
+            }
+        )
+    else:
+        elements.append(
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "请直接回复「确认执行」或「取消」。"},
+            }
+        )
     return {
         "config": {"wide_screen_mode": True},
         "header": {

@@ -71,6 +71,8 @@ class TaskRequest:
     iteration: int = 0
     executor: str = ""
     delivery: str = ""
+    # Read-only analysis tasks return a Feishu document instead of changing a repository.
+    analysis_only: bool = False
 
 
 @dataclass
@@ -101,6 +103,7 @@ class Task:
     mode: TaskMode = TaskMode.CREATE
     executor: str = ""
     delivery: str = ""
+    analysis_only: bool = False
 
     @classmethod
     def from_request(cls, request: TaskRequest, work_branch: str, risk_level: RiskLevel) -> Task:
@@ -122,6 +125,7 @@ class Task:
             mode=request.mode,
             executor=request.executor,
             delivery=request.delivery,
+            analysis_only=request.analysis_only,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -163,6 +167,7 @@ class Task:
             mode=TaskMode(mode_raw) if not isinstance(mode_raw, TaskMode) else mode_raw,
             executor=data.get("executor", ""),
             delivery=data.get("delivery", ""),
+            analysis_only=bool(data.get("analysis_only", False)),
         )
 
 
@@ -198,6 +203,7 @@ class ConversationSession:
     pr_url: str = ""
     executor: str = ""
     delivery: str = ""
+    analysis_only: bool = False
     messages: list[SessionMessage] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -219,6 +225,7 @@ class ConversationSession:
             "pr_url": self.pr_url,
             "executor": self.executor,
             "delivery": self.delivery,
+            "analysis_only": self.analysis_only,
             "messages": [msg.to_dict() for msg in self.messages],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -239,6 +246,7 @@ class ConversationSession:
             pr_url=data.get("pr_url", ""),
             executor=data.get("executor", ""),
             delivery=data.get("delivery", ""),
+            analysis_only=bool(data.get("analysis_only", False)),
             messages=[SessionMessage.from_dict(item) for item in data.get("messages", [])],
             created_at=data.get("created_at", utc_now()),
             updated_at=data.get("updated_at", utc_now()),

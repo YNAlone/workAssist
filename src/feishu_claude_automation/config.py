@@ -72,6 +72,8 @@ class Settings:
     anthropic_api_key: str
     anthropic_base_url: str
     anthropic_model: str
+    # Enables Feishu's outbound WebSocket event delivery instead of a public webhook.
+    feishu_long_connection_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -118,4 +120,7 @@ class Settings:
             or "",
             anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.kimi.com/coding/"),
             anthropic_model=normalize_kimi_model(os.getenv("ANTHROPIC_MODEL"), "kimi-for-coding"),
+            feishu_long_connection_enabled=_bool(
+                os.getenv("FEISHU_LONG_CONNECTION_ENABLED"), False
+            ),
         )

@@ -85,8 +85,9 @@ class DocWritingIntentTests(unittest.TestCase):
         self.assertEqual(intent.action, "clarify")
         self.assertEqual(intent.repo, "thinkingdata/official-web-frontend")
         self.assertIn("base_branch", intent.missing_fields)
-        self.assertIn("docs/analysis", intent.prompt)
-        self.assertIn("文档/方案", intent.reply_to_user)
+        self.assertIn("最终回复输出完整 Markdown", intent.prompt)
+        self.assertTrue(intent.analysis_only)
+        self.assertIn("飞书文档", intent.reply_to_user)
 
     def test_recover_prose_plan_to_confirm_when_complete(self) -> None:
         client = LLMClient(_settings())
@@ -107,8 +108,9 @@ class DocWritingIntentTests(unittest.TestCase):
                 default_base_branch="",
             )
         self.assertEqual(intent.action, "confirm_plan")
-        self.assertIn("docs/analysis", intent.prompt)
-        self.assertIn("文档/方案", intent.reply_to_user)
+        self.assertIn("最终回复输出完整 Markdown", intent.prompt)
+        self.assertTrue(intent.analysis_only)
+        self.assertIn("飞书文档", intent.reply_to_user)
 
     def test_normalize_chitchat_json_to_doc_plan(self) -> None:
         client = LLMClient(_settings())
@@ -136,7 +138,8 @@ class DocWritingIntentTests(unittest.TestCase):
             )
         self.assertEqual(intent.action, "confirm_plan")
         self.assertEqual(fake_json.action, "chitchat")  # original object untouched
-        self.assertIn("docs/analysis", intent.prompt)
+        self.assertIn("最终回复输出完整 Markdown", intent.prompt)
+        self.assertTrue(intent.analysis_only)
 
     def test_mock_doc_task(self) -> None:
         settings = _settings()
@@ -150,7 +153,8 @@ class DocWritingIntentTests(unittest.TestCase):
         )
         self.assertEqual(intent.action, "confirm_plan")
         self.assertEqual(intent.repo, "thinkingdata/official-web-frontend")
-        self.assertIn("docs/analysis", intent.prompt)
+        self.assertIn("最终回复输出完整 Markdown", intent.prompt)
+        self.assertTrue(intent.analysis_only)
 
 
 if __name__ == "__main__":

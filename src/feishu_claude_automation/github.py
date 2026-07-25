@@ -59,7 +59,17 @@ class GitHubClient:
 
     @staticmethod
     def _wrap_prompt(task: Task) -> str:
-        """Ensure analysis-only work is persisted as markdown for Feishu delivery."""
+        """Add task-specific delivery and safety constraints for Claude Code."""
+        if task.analysis_only:
+            return (
+                f"{task.prompt.rstrip()}\n\n"
+                "---\n"
+                "## 只读分析约束（必须遵守）\n"
+                "1. 这是只读分析任务：不得修改、创建、删除仓库文件，不得提交、推送或创建分支。\n"
+                "2. 请阅读当前基线代码后，直接在最终回复输出完整 Markdown 审查/分析报告。\n"
+                "3. 报告应包含结论、依据、涉及的模块和可执行建议；不要调用飞书 API。\n"
+                "4. 最终 Markdown 将由 Worker 自动导入飞书文档并回复链接。\n"
+            )
         return (
             f"{task.prompt.rstrip()}\n\n"
             "---\n"

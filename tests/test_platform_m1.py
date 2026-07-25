@@ -16,13 +16,14 @@ from feishu_claude_automation.config import Settings
 
 
 @pytest.fixture()
-def pg_url() -> str:
-    return "postgresql+psycopg://agent:agent@127.0.0.1:5432/agent_platform"
+def sqlite_url(tmp_path: Path) -> str:
+    """Give each platform test an isolated database with no PostgreSQL dependency."""
+    return f"sqlite:///{tmp_path / 'agent_platform.db'}"
 
 
 @pytest.fixture()
-def store(pg_url: str) -> PlatformStore:
-    engine = create_db_engine(pg_url)
+def store(sqlite_url: str) -> PlatformStore:
+    engine = create_db_engine(sqlite_url)
     init_db(engine)
     return PlatformStore(create_session_factory(engine))
 
@@ -105,8 +106,8 @@ def test_planner_prefers_doc_when_doc_url():
     assert tasks[0].agent_id == "doc"
 
 
-def test_orchestra_dispatches_code_job_dry_run(settings: Settings, monkeypatch, pg_url: str):
-    monkeypatch.setenv("DATABASE_URL", pg_url)
+def test_orchestra_dispatches_code_job_dry_run(settings: Settings, monkeypatch, sqlite_url: str):
+    monkeypatch.setenv("DATABASE_URL", sqlite_url)
     monkeypatch.setenv("AGENTS_FILE", str(Path("config/agents.json").resolve()))
     app = build_platform_app(settings)
     result = app.orchestra.create_and_dispatch(
@@ -132,8 +133,8 @@ def test_orchestra_dispatches_code_job_dry_run(settings: Settings, monkeypatch, 
     assert len(bundle["tasks"]) == 1
 
 
-def test_callback_updates_platform_task(settings: Settings, monkeypatch, pg_url: str):
-    monkeypatch.setenv("DATABASE_URL", pg_url)
+def test_callback_updates_platform_task(settings: Settings, monkeypatch, sqlite_url: str):
+    monkeypatch.setenv("DATABASE_URL", sqlite_url)
     monkeypatch.setenv("AGENTS_FILE", str(Path("config/agents.json").resolve()))
     app = build_platform_app(settings)
     created = app.orchestra.create_and_dispatch(

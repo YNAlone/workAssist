@@ -17,6 +17,10 @@ def settings(tmp_path: Path) -> Settings:
         json.dumps(
             {
                 "allowed_repos": ["acme/demo", "YNAlone/workAssist"],
+                "repo_catalog": {
+                    "acme/demo": {"default_branch": "main", "local_path": str(tmp_path / "acme-demo")},
+                    "YNAlone/workAssist": {"default_branch": "master", "local_path": str(tmp_path / "workassist")},
+                },
                 "protected_branches": ["main"],
                 "allowed_requesters": [],
                 "require_approval_for_risk": ["high"],
@@ -71,6 +75,70 @@ def test_parse_command():
     assert request.repo == "acme/demo"
     assert request.base_branch == "main"
     assert request.prompt == "Fix refund bug"
+
+
+def test_parse_command_allows_omitted_branch():
+    request = parse_command('/ai-fix repo=acme/demo desc="Fix refund bug"')
+    assert request is not None
+    assert request.base_branch == ""
+
+
+def test_create_task_uses_repository_default_branch(settings: Settings):
+    task = Orchestrator(settings).create_task(
+        TaskRequest(repo="YNAlone/workAssist", prompt="Describe the architecture")
+    )
+    assert task.base_branch == "master"
+
+
+def test_analysis_task_does_not_allocate_a_work_branch(settings: Settings):
+    task = Orchestrator(settings).create_task(
+        TaskRequest(
+            repo="YNAlone/workAssist",
+            prompt="Read and analyze the project architecture",
+            analysis_only=True,
+        )
+    )
+    assert task.analysis_only is True
+    assert task.work_branch == ""
+
+
+def test_runner_progress_is_audited_and_notified_once_per_phase(settings: Settings):
+    orchestrator = Orchestrator(settings)
+    task = orchestrator.create_task(
+        TaskRequest(repo="acme/demo", prompt="Analyze the architecture", chat_id="c1", message_id="m1")
+    )
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        replies: list[tuple[str, str, str]] = []
+        monkeypatch.setattr(
+            orchestrator,
+            "_reply_text",
+            lambda chat_id, text, message_id="": replies.append((chat_id, text, message_id)),
+        )
+        updated = orchestrator.handle_runner_callback(
+            {
+                "job_id": task.id,
+                "status": "running",
+                "phase": "preparing_branch",
+                "progress": 15,
+                "message": "正在拉取基线分支并准备工作分支。",
+            }
+        )
+        orchestrator.handle_runner_callback(
+            {
+                "job_id": task.id,
+                "status": "running",
+                "phase": "preparing_branch",
+                "progress": 15,
+                "message": "正在拉取基线分支并准备工作分支。",
+            }
+        )
+
+    assert updated.status == TaskStatus.RUNNING
+    assert updated.summary == "进度 15%：正在拉取基线分支并准备工作分支。"
+    assert any(event["event"] == "worker.progress" for event in updated.audit)
+    assert len(replies) == 1
+    assert "进度 15%" in replies[0][1]
 
 
 def test_policy_high_risk(settings: Settings):

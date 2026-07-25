@@ -19,7 +19,13 @@ class ExecutorDispatcher:
         self.local_worker = LocalWorkerClient(settings, policy)
 
     def prepare_task(self, task: Task) -> Task:
-        task.executor = self.policy.resolve_executor(repo=task.repo, executor_hint=task.executor)
+        # Only LocalWorker can return a Markdown report and create the Feishu
+        # document without writing to the repository.
+        task.executor = (
+            "local_worker"
+            if task.analysis_only
+            else self.policy.resolve_executor(repo=task.repo, executor_hint=task.executor)
+        )
         task.delivery = self.policy.resolve_delivery(repo=task.repo, delivery_hint=task.delivery)
         return task
 

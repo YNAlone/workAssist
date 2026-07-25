@@ -41,13 +41,15 @@ def parse_command(text: str) -> TaskRequest | None:
 
     remaining = FIELD_PATTERN.sub("", body).strip()
     prompt = fields.get("desc") or remaining
-    if not fields.get("repo") or not prompt or not fields.get("branch"):
+    # `branch` is optional: Orchestrator resolves the repository's configured
+    # default branch before it validates or dispatches the task.
+    if not fields.get("repo") or not prompt:
         return None
 
     return TaskRequest(
         repo=fields["repo"],
         prompt=prompt,
-        base_branch=fields["branch"],
+        base_branch=fields.get("branch", ""),
         requester_id=fields.get("requester", ""),
         chat_id=fields.get("chat", ""),
         issue=fields.get("issue", ""),

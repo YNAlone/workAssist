@@ -12,6 +12,7 @@ from agent_platform.app import PlatformApp, build_platform_app
 from agent_platform.errors import PlatformError
 
 from .config import Settings
+from .feishu_long_connection import FeishuLongConnection
 from .orchestrator import Orchestrator
 from .policy import PolicyError
 
@@ -170,6 +171,7 @@ class AutomationHandler(BaseHTTPRequestHandler):
                     mode=TaskMode(str(payload.get("mode") or TaskMode.CREATE.value)),
                     executor=str(payload.get("executor") or "local_worker"),
                     delivery=str(payload.get("delivery") or "push"),
+                    analysis_only=bool(payload.get("analysis_only", False)),
                 )
                 if not task.id:
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "job_id is required"})
@@ -270,6 +272,10 @@ def main() -> None:
     print(f"feishu-claude orchestrator listening on {settings.host}:{settings.port}")
     if getattr(server.RequestHandlerClass, "platform", None) is not None:
         print("platform API enabled: POST /v1/jobs, GET /v1/jobs/{id}")
+    if settings.feishu_long_connection_enabled:
+        listener = FeishuLongConnection(settings, server.RequestHandlerClass.orchestrator)
+        listener.start_background()
+        print("Feishu long connection enabled: receiving events without a public webhook")
     server.serve_forever()
 
 

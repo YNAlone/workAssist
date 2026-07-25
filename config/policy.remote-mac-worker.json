@@ -9,6 +9,7 @@
     "YNAlone/workAssist": {
       "provider": "github",
       "url": "https://github.com/YNAlone/workAssist",
+      "default_branch": "master",
       "executor": "local_worker",
       "local_path": "/Users/liyilun/Documents/AI/workAssist",
       "default_delivery": "push"
@@ -16,6 +17,7 @@
     "thinkingdata/official-web-frontend": {
       "provider": "gitlab",
       "url": "https://gitlab.thinkingdata.cn/thinkingdata/official-web-frontend",
+      "default_branch": "feature_6.4_cn",
       "executor": "local_worker",
       "local_path": "/Users/liyilun/Documents/Work/official-web-frontend",
       "default_delivery": "push"
@@ -23,6 +25,7 @@
     "thinkingdata/official-web-server": {
       "provider": "gitlab",
       "url": "https://gitlab.thinkingdata.cn/thinkingdata/official-web-server",
+      "default_branch": "master",
       "executor": "local_worker",
       "local_path": "/Users/liyilun/Documents/Work/official-web-server",
       "default_delivery": "push"
@@ -42,6 +45,6 @@
     "remove all"
   ],
   "max_concurrent_jobs": 5,
-  "default_base_branch": "",
+  "default_base_branch": "main",
   "work_branch_prefix": "ai/dev"
 }

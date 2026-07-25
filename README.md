@@ -105,6 +105,7 @@ flowchart LR
 - `FEISHU_VERIFICATION_TOKEN`：验证飞书事件和卡片回调。
 - `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`：发送应用机器人消息与卡片。
 - `FEISHU_BOT_WEBHOOK`：可选的通知回退 Webhook。
+- `FEISHU_LONG_CONNECTION_ENABLED`：设为 `true` 时，通过飞书 SDK 的长连接接收消息事件；本机无需暴露 `/feishu/events`。旧卡片按钮会改为提示用户回复「确认执行」或「取消」。
 - `GITHUB_TOKEN`：在目标仓库中具有工作流调度权限的 Token。
 - `GITHUB_WORKFLOW_ID`：目标仓库中的工作流文件名，例如 `feishu-claude.yml`。
 - `CALLBACK_BASE_URL`：本 Orchestrator 的公网 URL，供 Runner 回调使用。
@@ -120,11 +121,12 @@ flowchart LR
 - `LOCAL_WORKER_ORCHESTRATOR_URL`：远程 Worker 模式下 Orchestrator 的地址（留空则读本地队列文件）。
 - `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`：本机 Worker / CI 调度用模型（`kimi-for-coding` 或 `k3`）。
 
-在 `config/policy.example.json` 的 `repo_catalog` 中为仓库配置 `executor`、`local_path`、`default_delivery`：
+在 `config/policy.example.json` 的 `repo_catalog` 中为仓库配置 `executor`、`local_path`、`default_delivery` 和 `default_branch`。用户未指定基线分支时，系统使用该仓库的 `default_branch`；显式指定的分支始终优先。
 
 ```json
 "YNAlone/workAssist": {
   "provider": "github",
+  "default_branch": "master",
   "executor": "local_worker",
   "local_path": "/data/repos/workAssist",
   "default_delivery": "push"
@@ -246,6 +248,22 @@ Orchestrator 会使用 `job_id`、`prompt`、`base_branch`、`work_branch`、`ca
 - 将卡片交互回调配置为 `/feishu/actions`。
 - 在飞书与 `FEISHU_VERIFICATION_TOKEN` 中使用相同的验证 Token。
 - 为应用机器人授予消息发送权限。
+
+### 本机长连接模式
+
+若不希望将本机服务暴露到公网，设置 `FEISHU_LONG_CONNECTION_ENABLED=true`，并在飞书开发者后台将消息事件订阅方式改为「使用长连接接收事件」。本机只需能主动访问飞书；`HOST` 和 `CALLBACK_BASE_URL` 可设为 `127.0.0.1`，供同机 Local Worker 回调任务状态。
+
+长连接事件处理器会快速确认飞书事件，再在后台执行附件读取与 LLM 调用。为避免旧卡片按钮仍依赖 HTTP 回调，长连接模式下请直接回复「确认执行」或「取消」。
+
+### Worker 执行进度
+
+本机 Worker 会在检查仓库、准备分支、执行 Claude Code、收集结果及提交/推送等稳定阶段回调 Orchestrator。Orchestrator 会将最新阶段写入任务记录，并向原飞书消息回复简短进度；同一阶段的重复回调会自动忽略，不会转发 Claude 的原始输出或完整日志。
+
+### 只读分析任务
+
+当需求是阅读、审查、架构分析、调研或方案说明，且没有要求修改代码时，系统会使用只读分析模式：从基线分支创建临时 detached worktree，不创建工作分支、不修改或推送仓库。Claude 的 Markdown 最终输出会直接导入飞书文档，机器人回复文档地址和简短总结。
+
+代码改动任务仍使用工作分支。Worker 会先检查目标分支是否已经存在：存在则在该分支继续执行；不存在才从基线分支创建本地工作分支。
 
 自定义机器人 Webhook 仅可作为通知回退使用，因为它无法接收用户命令或卡片回调。
 

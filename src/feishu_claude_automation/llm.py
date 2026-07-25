@@ -33,6 +33,7 @@ class IntentResult:
     confidence: float = 0.0
     executor: str = ""
     delivery: str = ""
+    analysis_only: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> IntentResult:
@@ -46,6 +47,7 @@ class IntentResult:
             confidence = float(data.get("confidence", 0.0))
         except (TypeError, ValueError):
             confidence = 0.0
+        task_type = str(data.get("task_type", "") or "").strip().lower()
         return cls(
             action=action,
             repo=str(data.get("repo", "") or ""),
@@ -57,6 +59,7 @@ class IntentResult:
             confidence=confidence,
             executor=str(data.get("executor", "") or ""),
             delivery=str(data.get("delivery", "") or ""),
+            analysis_only=bool(data.get("analysis_only", False)) or task_type == "analysis",
         )
 
 
@@ -71,7 +74,8 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
   "missing_fields": ["repo"|"base_branch"|"prompt" 等缺失项],
   "confidence": 0.0-1.0,
   "executor": "local_worker|github_actions|gitlab_ci|vcs 或留空",
-  "delivery": "push|local_only 或留空"
+  "delivery": "push|local_only 或留空",
+  "task_type": "analysis|change"
 }
 
 规则：
@@ -81,15 +85,16 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
 4. 已有 PR/工作分支后，用户要求继续改用 iterate，prompt 写本轮增量。
 5. 用户取消用 cancel；闲聊/问能力用 chitchat。
 6. 仅使用 allowed_repos 中的仓库；用户说短名时填短名或完整名均可。
-7. base_branch 必须来自用户明确指定（如用户在会话中说明使用xxx分支/基于xxx分支等）；不要默认填 main 或其他分支。未指定时 missing_fields 加入 base_branch 并追问。
+7. base_branch 优先使用用户明确指定的分支；未指定时使用 repo_default_branches 中该仓库的默认分支，若未配置则使用 default_base_branch。仅当两者都没有时才在 missing_fields 加入 base_branch 并追问。
 8. 不要编造未提供的需求细节。
 9. 用户说「本机跑」「本地 worker」「不用 CI」时 executor=local_worker。
 10. 用户说「只改本地」「不要推远程」「不要开 PR」时 delivery=local_only；说「推远程」「开 PR/MR」时 delivery=push。
 11. 文档/方案类任务（写文档、开发方案、技术方案、分析报告、AB Test 方案、完整方案、调研报告等，且不要求立刻改业务代码）：
     - 必须当作可派发任务，禁止用 chitchat，也禁止在 reply_to_user 里输出完整长文方案。
     - 缺仓库或基线分支 → action=clarify，missing_fields 补齐后追问。
-    - 信息够用 → action=confirm_plan；prompt 写明：在目标仓库基于用户描述（及引用文档要点）产出完整 Markdown 方案，保存为 docs/analysis-*.md，不要只在对话回复；若需代码改动可另说明，但本任务以文档交付为主。
-    - reply_to_user 只做一两句计划确认（例如将调度写方案文档）。
+    - 未要求修改代码时，task_type=analysis：Worker 会在临时只读 worktree 分析基线代码，不创建工作分支，也不写入仓库；prompt 要求 Claude 直接返回完整 Markdown，系统随后导入飞书文档。
+    - 明确要求改代码时，task_type=change：按工作分支、提交和 PR/MR 流程执行。
+    - reply_to_user 只做一两句计划确认（例如将调度只读分析并生成飞书文档）。
 12. 用户消息可能是结构化附件信封（含 text/link/image/file/doc 等 part）。必须综合全部 part 理解意图；doc part 若含 document body 应优先采用；图片若仅有 image_key 而无像素，不要臆造图片内容。
 """
 
@@ -120,6 +125,22 @@ def looks_like_doc_writing(text: str) -> bool:
         return False
     lowered = raw.lower()
     return any(hint in raw or hint in lowered for hint in DOC_TASK_HINTS)
+
+
+def looks_like_read_only_analysis(text: str) -> bool:
+    """Classify requests that inspect code but do not ask to change repository content."""
+    raw = (text or "").strip()
+    lowered = raw.lower()
+    change_hints = (
+        "修改代码", "修复", "新增功能", "实现功能", "开发功能", "写代码", "改代码", "重构", "删除", "迁移",
+        "fix", "implement",
+    )
+    analysis_hints = (
+        "阅读", "读取", "分析", "审查", "架构", "调研", "说明", "报告", "方案", "文档", "review", "analyze",
+    )
+    return bool(raw) and not any(hint in raw or hint in lowered for hint in change_hints) and any(
+        hint in raw or hint in lowered for hint in analysis_hints
+    )
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -220,6 +241,20 @@ def extract_base_branch_hint(text: str) -> str:
     return ""
 
 
+def resolve_configured_base_branch(
+    repo: str,
+    repo_default_branches: dict[str, str],
+    default_base_branch: str,
+) -> str:
+    """Find a configured default branch by full repository name or short name."""
+    normalized = (repo or "").strip().lower()
+    if normalized:
+        for name, branch in repo_default_branches.items():
+            if name.lower() == normalized or name.rsplit("/", 1)[-1].lower() == normalized:
+                return (branch or "").strip()
+    return (default_base_branch or "").strip()
+
+
 class LLMClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -231,10 +266,18 @@ class LLMClient:
         session: ConversationSession,
         allowed_repos: list[str],
         default_base_branch: str,
+        repo_default_branches: dict[str, str] | None = None,
         user_content: str | list[dict[str, Any]] | None = None,
     ) -> IntentResult:
+        repo_default_branches = repo_default_branches or {}
         if self.settings.dry_run or not self.settings.orch_llm_api_key:
-            return self._mock_intent(user_text=user_text, session=session, allowed_repos=allowed_repos)
+            return self._mock_intent(
+                user_text=user_text,
+                session=session,
+                allowed_repos=allowed_repos,
+                default_base_branch=default_base_branch,
+                repo_default_branches=repo_default_branches,
+            )
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -243,9 +286,10 @@ class LLMClient:
                 "content": json.dumps(
                     {
                         "allowed_repos": allowed_repos,
-                "default_base_branch": "",
-                "note": "base_branch must be explicitly provided by the user; do not invent a default",
-                "session": {
+                "default_base_branch": default_base_branch,
+                "repo_default_branches": repo_default_branches,
+                "note": "use the configured default branch when the user does not explicitly provide one",
+        "session": {
                             "status": session.status.value,
                             "repo": session.repo,
                             "base_branch": session.base_branch,
@@ -253,6 +297,7 @@ class LLMClient:
                             "prompt": session.prompt,
                             "pr_url": session.pr_url,
                             "current_task_id": session.current_task_id,
+                            "analysis_only": session.analysis_only,
                         },
                     },
                     ensure_ascii=False,
@@ -280,6 +325,8 @@ class LLMClient:
                 llm_content=content,
                 session=session,
                 allowed_repos=allowed_repos,
+                default_base_branch=default_base_branch,
+                repo_default_branches=repo_default_branches,
             )
             if recovered is not None:
                 return recovered
@@ -289,6 +336,8 @@ class LLMClient:
             user_text=user_text,
             session=session,
             allowed_repos=allowed_repos,
+            default_base_branch=default_base_branch,
+            repo_default_branches=repo_default_branches,
         )
 
     def _normalize_doc_writing_intent(
@@ -298,23 +347,29 @@ class LLMClient:
         user_text: str,
         session: ConversationSession,
         allowed_repos: list[str],
+        default_base_branch: str,
+        repo_default_branches: dict[str, str],
     ) -> IntentResult:
         """If the model treated a doc/plan request as chitchat, upgrade it to a dispatchable plan."""
         if intent.action not in {"chitchat", "clarify"} and intent.prompt:
-            if looks_like_doc_writing(user_text) and "docs/analysis" not in intent.prompt:
+            if looks_like_read_only_analysis(user_text):
+                intent.analysis_only = True
+            if intent.analysis_only and "最终回复输出完整 Markdown" not in intent.prompt:
                 intent.prompt = (
                     f"{intent.prompt.rstrip()}\n\n"
-                    "（文档/方案任务）请将完整方案写入 `docs/analysis-<task_id>.md`，不要只在对话中回复。"
+                    "（只读分析任务）不得修改仓库；请直接在最终回复输出完整 Markdown 报告，"
+                    "系统会自动导入飞书文档。"
                 )
             return intent
         if not looks_like_doc_writing(user_text):
             return intent
         if intent.action == "clarify" and intent.missing_fields:
             # Keep clarify, but ensure prompt carries the doc-writing instruction for next turn.
+            intent.analysis_only = True
             if not intent.prompt:
                 intent.prompt = (
                     f"用户需求（文档/方案类任务）：\n{user_text.strip()}\n\n"
-                    "请在目标仓库撰写完整 Markdown 方案，保存为 `docs/analysis-<task_id>.md`。"
+                    "请只读分析目标仓库，在最终回复输出完整 Markdown 方案；不要修改仓库。"
                 )
             return intent
 
@@ -323,6 +378,8 @@ class LLMClient:
             llm_content=intent.reply_to_user or intent.prompt,
             session=session,
             allowed_repos=allowed_repos,
+            default_base_branch=default_base_branch,
+            repo_default_branches=repo_default_branches,
         )
         return recovered or intent
 
@@ -333,6 +390,8 @@ class LLMClient:
         llm_content: str,
         session: ConversationSession,
         allowed_repos: list[str],
+        default_base_branch: str,
+        repo_default_branches: dict[str, str],
     ) -> IntentResult | None:
         """When the model dumps a doc/plan in prose, coerce it into dispatchable intent JSON fields."""
         prose = (llm_content or "").strip()
@@ -342,13 +401,18 @@ class LLMClient:
                 return None
 
         repo = session.repo or resolve_repo_from_text(user_text, allowed_repos)
-        base_branch = (session.base_branch or "").strip() or extract_base_branch_hint(user_text)
+        base_branch = (
+            (session.base_branch or "").strip()
+            or extract_base_branch_hint(user_text)
+            or resolve_configured_base_branch(repo, repo_default_branches, default_base_branch)
+        )
 
         draft = prose[:8000]
+        analysis_only = True
         prompt = (
             f"用户需求（文档/方案类任务）：\n{user_text.strip()}\n\n"
-            "请在目标仓库撰写完整 Markdown 开发/分析方案，保存为 `docs/analysis-<task_id>.md`"
-            "（task_id 由系统注入），不要只在对话中回复。"
+            "请只读分析目标仓库，在最终回复输出完整 Markdown 开发/分析方案；"
+            "不要修改仓库文件、创建分支、提交或推送。"
             "若用户引用了飞书文档，请结合其目标与仓库现状给出可落地的方案。"
         )
         if draft:
@@ -372,11 +436,12 @@ class LLMClient:
                 base_branch=base_branch,
                 work_branch_hint=session.work_branch,
                 prompt=prompt,
-                reply_to_user="；".join(asks) + "。识别到这是文档/方案类任务，补齐信息后将调度写入仓库。",
+                reply_to_user="；".join(asks) + "。识别到这是只读分析任务，补齐信息后将生成飞书文档。",
                 missing_fields=missing,
                 confidence=0.75,
                 executor=session.executor,
-                delivery=session.delivery or "push",
+                delivery=session.delivery,
+                analysis_only=analysis_only,
             )
 
         return IntentResult(
@@ -386,12 +451,13 @@ class LLMClient:
             work_branch_hint=session.work_branch,
             prompt=prompt,
             reply_to_user=(
-                f"已识别为文档/方案任务，将在 `{repo}`（基于 `{base_branch}`）"
-                "调度生成 `docs/analysis-*.md` 方案文档，请确认后执行。"
+                f"已识别为只读分析任务，将在 `{repo}`（基于 `{base_branch}`）"
+                "生成飞书文档，请确认后执行。"
             ),
             confidence=0.8,
             executor=session.executor,
-            delivery=session.delivery or "push",
+            delivery=session.delivery,
+            analysis_only=analysis_only,
         )
 
     def _chat_completions(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -442,6 +508,8 @@ class LLMClient:
         user_text: str,
         session: ConversationSession,
         allowed_repos: list[str],
+        default_base_branch: str,
+        repo_default_branches: dict[str, str],
     ) -> IntentResult:
         text = user_text.strip()
         lowered = text.lower()
@@ -460,6 +528,7 @@ class LLMClient:
                 prompt=session.prompt,
                 reply_to_user="好的，开始调度 Claude Code 执行。",
                 confidence=1.0,
+                analysis_only=session.analysis_only,
             )
 
         if session.status.value == "awaiting_feedback" and session.work_branch:
@@ -471,6 +540,7 @@ class LLMClient:
                 prompt=text,
                 reply_to_user="收到，将在同一分支上继续修改。",
                 confidence=0.9,
+                analysis_only=False,
             )
 
         if session.status.value == "awaiting_approval" and any(word in text for word in ("批准", "同意", "approve")):
@@ -482,11 +552,16 @@ class LLMClient:
                 prompt=session.prompt,
                 reply_to_user="已记录批准，开始执行。",
                 confidence=1.0,
+                analysis_only=session.analysis_only,
             )
 
         repo = session.repo or resolve_repo_from_text(text, allowed_repos)
         work_hint = session.work_branch
-        base_branch = (session.base_branch or "").strip() or extract_base_branch_hint(text)
+        base_branch = (
+            (session.base_branch or "").strip()
+            or extract_base_branch_hint(text)
+            or resolve_configured_base_branch(repo, repo_default_branches, default_base_branch)
+        )
 
         branch_match = re.search(
             r"(?:分支|branch)\s*[「\"']?([A-Za-z0-9._/-]+)[」\"']?",
@@ -513,12 +588,13 @@ class LLMClient:
                         work_hint = candidate
 
         doc_task = looks_like_doc_writing(text)
+        analysis_only = looks_like_read_only_analysis(text)
         prompt = session.prompt
-        if doc_task:
+        if analysis_only:
             prompt = (
-                f"用户需求（文档/方案类任务）：\n{text}\n\n"
-                "请在目标仓库撰写完整 Markdown 方案，保存为 `docs/analysis-<task_id>.md`，"
-                "不要只在对话中回复。"
+                f"用户需求（只读分析任务）：\n{text}\n\n"
+                "请只读分析目标仓库，在最终回复输出完整 Markdown 报告。"
+                "不得修改仓库文件、创建分支、提交或推送；系统会自动导入飞书文档。"
             )
         elif "功能" in text or "修复" in text or "新增" in text or "fix" in lowered or len(text) > 15:
             prompt = text if not prompt else f"{prompt}\n补充：{text}"
@@ -531,8 +607,6 @@ class LLMClient:
         if any(word in text for word in ("只改本地", "不要推远程", "不要开 pr", "不要开pr", "不要推送")):
             delivery = "local_only"
         elif any(word in text for word in ("推远程", "开 pr", "开pr", "开 mr", "开mr", "推送远程")):
-            delivery = "push"
-        elif doc_task and not delivery:
             delivery = "push"
 
         missing: list[str] = []
@@ -566,6 +640,7 @@ class LLMClient:
                 confidence=0.7,
                 executor=executor,
                 delivery=delivery,
+                analysis_only=analysis_only,
             )
 
         return IntentResult(
@@ -582,4 +657,5 @@ class LLMClient:
             confidence=0.85,
             executor=executor,
             delivery=delivery,
+            analysis_only=analysis_only,
         )

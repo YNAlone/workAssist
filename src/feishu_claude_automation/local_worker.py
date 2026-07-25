@@ -64,10 +64,18 @@ class LocalWorkerRunner:
     def execute_job(self, job: dict[str, Any]) -> None:
         job_id = str(job.get("job_id") or "")
         local_path = Path(str(job.get("local_path") or ""))
+        self._progress(
+            job,
+            phase="validating_workspace",
+            progress=5,
+            message="正在检查本机仓库目录。",
+        )
         if not local_path.is_dir():
             raise RuntimeError(f"local_path does not exist: {local_path}")
 
-        self._callback(job, {"status": "running"})
+        if bool(job.get("analysis_only", False)):
+            self._execute_analysis_job(job, repo_path=local_path, job_id=job_id)
+            return
 
         mode = str(job.get("mode") or "create")
         base_branch = str(job.get("base_branch") or "")
@@ -75,11 +83,50 @@ class LocalWorkerRunner:
         prompt = str(job.get("prompt") or "")
         delivery = str(job.get("delivery") or "push")
 
-        self._git_checkout(local_path, mode=mode, base_branch=base_branch, work_branch=work_branch)
+        self._progress(
+            job,
+            phase="checking_work_branch",
+            progress=12,
+            message="正在检查目标工作分支是否已存在。",
+        )
+        branch_exists = self._git_checkout(
+            local_path,
+            mode=mode,
+            base_branch=base_branch,
+            work_branch=work_branch,
+        )
+        self._progress(
+            job,
+            phase="preparing_branch",
+            progress=20,
+            message=(
+                "目标工作分支已存在，正在基于该分支继续执行。"
+                if branch_exists
+                else "目标工作分支不存在，已从基线分支创建本地工作分支。"
+            ),
+        )
+        self._progress(
+            job,
+            phase="running_claude",
+            progress=35,
+            message="Claude Code 正在分析仓库并执行任务。",
+        )
         self._run_claude(local_path, prompt)
+        self._progress(
+            job,
+            phase="collecting_result",
+            progress=70,
+            message="正在收集分析报告和代码改动。",
+        )
         report_path, report_text = self._locate_report(local_path, job_id)
 
         if delivery == "local_only":
+            self._progress(
+                job,
+                phase="finalizing_local",
+                progress=90,
+                message="正在汇总本机工作区改动。",
+            )
             diff_stat = self._git_diff_stat(local_path)
             summary = "本机工作区已更新（未推远程）"
             if report_text:
@@ -98,6 +145,12 @@ class LocalWorkerRunner:
             )
             return
 
+        self._progress(
+            job,
+            phase="publishing",
+            progress=85,
+            message="正在提交、推送改动并创建 PR/MR。",
+        )
         commit_sha, no_changes = self._commit_and_push(
             local_path,
             job_id=job_id,
@@ -143,6 +196,56 @@ class LocalWorkerRunner:
             },
         )
 
+    def _execute_analysis_job(self, job: dict[str, Any], *, repo_path: Path, job_id: str) -> None:
+        """Run a read-only task in a detached worktree and return Markdown to Feishu."""
+        base_branch = str(job.get("base_branch") or "")
+        prompt = str(job.get("prompt") or "")
+        self._progress(
+            job,
+            phase="preparing_readonly_workspace",
+            progress=15,
+            message="正在从基线分支准备临时只读分析工作区。",
+        )
+        worktree_path = self._create_detached_worktree(repo_path, base_branch=base_branch, job_id=job_id)
+        try:
+            self._progress(
+                job,
+                phase="running_claude_analysis",
+                progress=35,
+                message="Claude Code 正在只读分析仓库。",
+            )
+            report_markdown = self._run_claude(worktree_path, prompt, analysis_only=True)
+            if not report_markdown.strip():
+                raise RuntimeError("Claude did not return an analysis report")
+            self._progress(
+                job,
+                phase="creating_feishu_document",
+                progress=85,
+                message="正在将分析结果导入飞书文档。",
+            )
+            self._callback(
+                job,
+                {
+                    "status": "completed",
+                    "summary": "只读分析已完成，正在生成飞书文档。",
+                    "report_markdown": report_markdown,
+                },
+            )
+        finally:
+            self._remove_detached_worktree(repo_path, worktree_path)
+
+    def _progress(self, job: dict[str, Any], *, phase: str, progress: int, message: str) -> None:
+        """Report only stable execution milestones; raw Claude output is intentionally excluded."""
+        self._callback(
+            job,
+            {
+                "status": "running",
+                "phase": phase,
+                "progress": max(0, min(100, int(progress))),
+                "message": message,
+            },
+        )
+
     def _run(self, args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
         merged = {**os.environ, **(env or {})}
         result = subprocess.run(
@@ -165,25 +268,77 @@ class LocalWorkerRunner:
         mode: str,
         base_branch: str,
         work_branch: str,
-    ) -> None:
-        self._run(["git", "fetch", "origin", base_branch, work_branch], cwd=repo_path)
-        if mode == "iterate":
+    ) -> bool:
+        if not base_branch:
+            raise RuntimeError("base_branch is required")
+        branch_exists = self._remote_branch_exists(repo_path, work_branch)
+        self._run(["git", "fetch", "origin", base_branch], cwd=repo_path)
+        if mode == "iterate" and not branch_exists:
+            raise RuntimeError(f"iteration work branch does not exist on origin: {work_branch}")
+        if branch_exists:
+            self._run(["git", "fetch", "origin", work_branch], cwd=repo_path)
             self._run(["git", "checkout", "-B", work_branch, f"origin/{work_branch}"], cwd=repo_path)
         else:
             self._run(["git", "checkout", "-B", work_branch, f"origin/{base_branch}"], cwd=repo_path)
+        return branch_exists
 
-    def _run_claude(self, repo_path: Path, prompt: str) -> None:
+    @staticmethod
+    def _remote_branch_exists(repo_path: Path, branch: str) -> bool:
+        if not branch:
+            return False
+        result = subprocess.run(
+            ["git", "ls-remote", "--exit-code", "--heads", "origin", branch],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return True
+        # git ls-remote --exit-code uses 2 when no matching remote branch exists.
+        if result.returncode == 2:
+            return False
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"failed to check remote branch {branch}: {detail}")
+
+    def _create_detached_worktree(self, repo_path: Path, *, base_branch: str, job_id: str) -> Path:
+        if not base_branch:
+            raise RuntimeError("base_branch is required for analysis")
+        safe_job_id = "".join(char for char in job_id if char.isalnum() or char in {"-", "_"})
+        if not safe_job_id:
+            raise RuntimeError("invalid job_id for analysis worktree")
+        root = (self.settings.local_worker_queue_path.parent / "analysis_worktrees").resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        worktree_path = root / safe_job_id
+        if worktree_path.exists():
+            raise RuntimeError(f"analysis worktree already exists: {worktree_path}")
+        self._run(["git", "fetch", "origin", base_branch], cwd=repo_path)
+        self._run(
+            ["git", "worktree", "add", "--detach", str(worktree_path), f"origin/{base_branch}"],
+            cwd=repo_path,
+        )
+        return worktree_path
+
+    def _remove_detached_worktree(self, repo_path: Path, worktree_path: Path) -> None:
+        try:
+            self._run(["git", "worktree", "remove", "--force", str(worktree_path)], cwd=repo_path)
+        except Exception as exc:  # noqa: BLE001 - cleanup must not hide the task outcome
+            print(f"analysis worktree cleanup failed: {exc}")
+
+    def _run_claude(self, repo_path: Path, prompt: str, *, analysis_only: bool = False) -> str:
         if self.settings.dry_run:
-            return
+            return ""
         if not self.settings.anthropic_api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is required for local worker")
+        if not prompt.strip():
+            raise RuntimeError("Claude prompt is empty")
 
         env = {
             "ANTHROPIC_API_KEY": self.settings.anthropic_api_key,
             "ANTHROPIC_BASE_URL": self.settings.anthropic_base_url,
             "ANTHROPIC_MODEL": self.settings.anthropic_model,
         }
-        self._run(
+        return self._run(
             [
                 "claude",
                 "-p",
@@ -192,8 +347,9 @@ class LocalWorkerRunner:
                 "50",
                 "--model",
                 self.settings.anthropic_model,
-                "--allowedTools",
-                "Edit,Read,Write,Bash",
+                # The CLI accepts a variadic --allowedTools value. Keep the
+                # value in the same argv token so it cannot consume `prompt`.
+                f"--allowedTools={'Read,Bash' if analysis_only else 'Edit,Read,Write,Bash'}",
                 prompt,
             ],
             cwd=repo_path,

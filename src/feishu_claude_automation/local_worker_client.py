@@ -42,6 +42,7 @@ class LocalWorkerClient:
             "work_branch": task.work_branch,
             "mode": task.mode.value,
             "delivery": task.delivery or "push",
+            "analysis_only": task.analysis_only,
             "provider": provider,
             "local_path": local_path,
             "callback_url": f"{self.settings.callback_base_url.rstrip('/')}/callbacks/runner",
