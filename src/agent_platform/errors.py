@@ -23,3 +23,11 @@ class ValidationError(PlatformError):
 
 class DispatchError(PlatformError):
     pass
+
+
+class StaleLeaseError(PlatformError):
+    """Raised when a worker attempts to mutate a run after losing its lease."""
+
+
+class WorkerJobNotFoundError(PlatformError):
+    pass

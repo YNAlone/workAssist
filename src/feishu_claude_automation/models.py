@@ -14,6 +14,8 @@ class TaskStatus(str, Enum):
     DISPATCHED = "dispatched"
     RUNNING = "running"
     PR_CREATED = "pr_created"
+    AWAITING_RETRY = "awaiting_retry"
+    NEEDS_ATTENTION = "needs_attention"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
@@ -71,6 +73,7 @@ class TaskRequest:
     iteration: int = 0
     executor: str = ""
     delivery: str = ""
+    model: str = ""
 
 
 @dataclass
@@ -101,6 +104,10 @@ class Task:
     mode: TaskMode = TaskMode.CREATE
     executor: str = ""
     delivery: str = ""
+    model: str = ""
+    phase: str = ""
+    last_heartbeat_at: str = ""
+    verification: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_request(cls, request: TaskRequest, work_branch: str, risk_level: RiskLevel) -> Task:
@@ -122,6 +129,7 @@ class Task:
             mode=request.mode,
             executor=request.executor,
             delivery=request.delivery,
+            model=request.model,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -163,6 +171,10 @@ class Task:
             mode=TaskMode(mode_raw) if not isinstance(mode_raw, TaskMode) else mode_raw,
             executor=data.get("executor", ""),
             delivery=data.get("delivery", ""),
+            model=data.get("model", ""),
+            phase=data.get("phase", ""),
+            last_heartbeat_at=data.get("last_heartbeat_at", ""),
+            verification=data.get("verification") or {},
         )
 
 
@@ -198,6 +210,7 @@ class ConversationSession:
     pr_url: str = ""
     executor: str = ""
     delivery: str = ""
+    model: str = ""
     messages: list[SessionMessage] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -219,6 +232,7 @@ class ConversationSession:
             "pr_url": self.pr_url,
             "executor": self.executor,
             "delivery": self.delivery,
+            "model": self.model,
             "messages": [msg.to_dict() for msg in self.messages],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -239,6 +253,7 @@ class ConversationSession:
             pr_url=data.get("pr_url", ""),
             executor=data.get("executor", ""),
             delivery=data.get("delivery", ""),
+            model=data.get("model", ""),
             messages=[SessionMessage.from_dict(item) for item in data.get("messages", [])],
             created_at=data.get("created_at", utc_now()),
             updated_at=data.get("updated_at", utc_now()),

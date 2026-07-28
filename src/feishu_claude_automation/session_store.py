@@ -53,14 +53,14 @@ class SessionStore:
             return self.save(session)
         return session
 
-    def get_active(self, chat_id: str, requester_id: str) -> ConversationSession | None:
+    def get_active(self, chat_id: str, requester_id: str = "") -> ConversationSession | None:
+        """Return the group-scoped session; requester remains the owner, not an identity key."""
         with self._lock:
             sessions = [ConversationSession.from_dict(item) for item in self._read_all().values()]
         candidates = [
             session
             for session in sessions
             if session.chat_id == chat_id
-            and session.requester_id == requester_id
             and session.status != SessionStatus.CLOSED
             and not self._is_expired(session)
         ]

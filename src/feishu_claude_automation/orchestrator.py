@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from .audit import AuditLogger
 from .cards import build_confirm_plan_card, build_task_card
-from .config import Settings
+from .config import Settings, extract_model_from_text, normalize_kimi_model
 from .feishu import FeishuClient
 from .feishu_docs import FeishuDocService
 from .llm import IntentResult, LLMClient
@@ -102,6 +102,7 @@ class Orchestrator:
         task.id = task_id
         task.executor = request.executor
         task.delivery = request.delivery
+        task.model = self._resolve_model(request.model)
         task = self.executor.prepare_task(task)
         self._append_audit(
             task,
@@ -109,6 +110,7 @@ class Orchestrator:
             repo=task.repo,
             risk=task.risk_level.value,
             mode=task.mode.value,
+            model=task.model,
         )
 
         if self.policy.requires_approval(task.risk_level):
@@ -149,6 +151,8 @@ class Orchestrator:
 
     def approve_task(self, task_id: str, approver_id: str) -> Task:
         task = self._require_task(task_id)
+        if not self.policy.can_control_task(owner_id=task.requester_id, operator_id=approver_id):
+            raise PolicyError("Only the task owner or a configured approver can approve")
         if task.status != TaskStatus.PENDING_APPROVAL:
             raise PolicyError(f"Task is not pending approval: {task.status.value}")
         task.approved_by = approver_id
@@ -158,6 +162,10 @@ class Orchestrator:
 
     def cancel_task(self, task_id: str, actor_id: str = "") -> Task:
         task = self._require_task(task_id)
+        if not self.policy.can_control_task(owner_id=task.requester_id, operator_id=actor_id):
+            raise PolicyError("Only the task owner or a configured approver can cancel")
+        if task.executor == "local_worker":
+            self.executor.local_worker.cancel(task.id, reason=f"cancelled by {actor_id}")
         task.status = TaskStatus.CANCELLED
         task = self.store.save(task)
         self._append_audit(task, "task.cancelled", actor=actor_id)
@@ -165,8 +173,10 @@ class Orchestrator:
         self._notify(task)
         return task
 
-    def rerun_task(self, task_id: str) -> Task:
+    def rerun_task(self, task_id: str, actor_id: str = "") -> Task:
         task = self._require_task(task_id)
+        if not self.policy.can_control_task(owner_id=task.requester_id, operator_id=actor_id):
+            raise PolicyError("Only the task owner or a configured approver can rerun")
         request = TaskRequest(
             repo=task.repo,
             prompt=task.prompt,
@@ -177,6 +187,9 @@ class Orchestrator:
             issue=task.issue,
             session_id=task.session_id,
             mode=TaskMode.CREATE,
+            executor=task.executor,
+            delivery=task.delivery,
+            model=task.model,
         )
         return self.create_task(request)
 
@@ -189,6 +202,10 @@ class Orchestrator:
             task.pr_url = payload.get("pr_url", task.pr_url)
         task.commit_sha = payload.get("commit_sha", task.commit_sha)
         task.error = payload.get("error", "")
+        task.phase = str(payload.get("phase") or task.phase)
+        task.last_heartbeat_at = str(payload.get("heartbeat_at") or task.last_heartbeat_at)
+        if isinstance(payload.get("verification"), dict):
+            task.verification = payload["verification"]
         if payload.get("executor"):
             task.executor = str(payload.get("executor") or task.executor)
         if payload.get("delivery"):
@@ -212,6 +229,13 @@ class Orchestrator:
             task.status = TaskStatus.PR_CREATED
             if status in {"completed", "succeeded"} and not payload.get("pr_url"):
                 task.summary = payload.get("summary") or task.summary or "Completed without code changes"
+            session_status = SessionStatus.AWAITING_FEEDBACK
+        elif status in {"needs_attention", "awaiting_retry"}:
+            task.status = (
+                TaskStatus.NEEDS_ATTENTION
+                if status == "needs_attention"
+                else TaskStatus.AWAITING_RETRY
+            )
             session_status = SessionStatus.AWAITING_FEEDBACK
         elif status == "failed":
             task.status = TaskStatus.FAILED
@@ -382,6 +406,11 @@ class Orchestrator:
                 "action": "execute",
             }
 
+        picked_model = extract_model_from_text(cleaned)
+        if picked_model:
+            session.model = picked_model
+            self.sessions.save(session)
+
         if looks_like_cancel(cleaned) and session.status != SessionStatus.CLOSED:
             if session.current_task_id:
                 task = self.store.get(session.current_task_id)
@@ -439,6 +468,12 @@ class Orchestrator:
             session.executor = intent.executor
         if intent.delivery:
             session.delivery = intent.delivery
+        if intent.model:
+            session.model = intent.model
+
+    def _resolve_model(self, preferred: str = "") -> str:
+        raw = (preferred or "").strip() or self.settings.anthropic_model
+        return normalize_kimi_model(raw, self.settings.anthropic_model)
 
     def _apply_intent(
         self,
@@ -459,6 +494,7 @@ class Orchestrator:
         if action == "chitchat":
             reply = intent.reply_to_user or (
                 "我可以帮你用自然语言改代码：请说明仓库、基于哪个已有分支、以及需求；"
+                "可指定执行模型（如「用 k3」或「模型 kimi-for-coding」）；"
                 "确认后我会调度 Claude Code。PR 出来后也可继续说「再改一下」。也支持 /ai-fix 命令。"
             )
             self._reply_text(chat_id, reply, message_id)
@@ -569,6 +605,7 @@ class Orchestrator:
             iteration=iteration,
             executor=session.executor,
             delivery=session.delivery,
+            model=session.model,
         )
         task = self.create_task(request)
         session.current_task_id = task.id
@@ -632,6 +669,11 @@ class Orchestrator:
         session = self.sessions.get(session_id)
         if not session or session.status == SessionStatus.CLOSED:
             raise PolicyError(f"Session not found: {session_id}")
+        if not self.policy.can_control_task(
+            owner_id=session.requester_id,
+            operator_id=operator_id,
+        ):
+            raise PolicyError("Only the task owner or a configured approver can confirm")
         missing = self._missing_plan_fields(session)
         if missing:
             raise PolicyError(f"Session plan incomplete: {', '.join(missing)}")
@@ -645,6 +687,8 @@ class Orchestrator:
         session = self.sessions.get(session_id)
         if not session:
             raise PolicyError(f"Session not found: {session_id}")
+        if not self.policy.can_control_task(owner_id=session.requester_id, operator_id=actor_id):
+            raise PolicyError("Only the task owner or a configured approver can cancel")
         if session.current_task_id:
             task = self.store.get(session.current_task_id)
             if task and task.status in {
@@ -700,7 +744,7 @@ class Orchestrator:
             task = self.cancel_task(task_id, operator)
             return {"task_id": task.id, "status": task.status.value}
         if action_name == "rerun":
-            task = self.rerun_task(task_id)
+            task = self.rerun_task(task_id, operator)
             return {"task_id": task.id, "status": task.status.value}
         if action_name == "confirm_execute":
             task = self.confirm_session_execute(session_id, operator)
@@ -723,6 +767,12 @@ class Orchestrator:
         session.base_branch = task.base_branch
         session.work_branch = task.work_branch
         session.prompt = task.prompt or session.prompt
+        if task.model:
+            session.model = task.model
+        if task.executor:
+            session.executor = task.executor
+        if task.delivery:
+            session.delivery = task.delivery
         if task.pr_url:
             session.pr_url = task.pr_url
         session.status = status

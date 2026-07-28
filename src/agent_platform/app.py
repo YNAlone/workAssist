@@ -46,7 +46,7 @@ class PlatformApp:
 
 def build_platform_app(settings: Settings | None = None) -> PlatformApp:
     settings = settings or Settings.from_env()
-    database_url = os.getenv("DATABASE_URL")
+    database_url = settings.database_url or os.getenv("DATABASE_URL")
     engine = create_db_engine(database_url)
     init_db(engine)
     session_factory = create_session_factory(engine)

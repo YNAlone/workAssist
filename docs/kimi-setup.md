@@ -35,6 +35,15 @@ ANTHROPIC_MODEL=k3
 
 也可只改其中一处（例如意图解析用 `kimi-for-coding`，改代码用 `k3`）。
 
+## 会话中临时选择执行模型
+
+自然语言可指定本轮/本会话的执行模型（写入会话并随任务下发；未指定则用 `ANTHROPIC_MODEL`）：
+
+- 「用 k3」「切换到 k3」「模型 kimi-for-coding」
+- 命令：`/ai-fix repo=... branch=... model=k3 desc="..."`
+
+确认卡片与任务卡片会显示当前执行模型。
+
 ## GitHub Secrets 配置
 
 进入仓库 **Settings → Secrets and variables → Actions → New repository secret**：

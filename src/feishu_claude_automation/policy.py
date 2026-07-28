@@ -21,6 +21,7 @@ class RepoInfo:
     executor: str = ""
     local_path: str = ""
     default_delivery: str = "push"
+    verify_commands: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -35,6 +36,7 @@ class Policy:
     work_branch_prefix: str
     default_executor: str
     repo_catalog: dict[str, RepoInfo] = field(default_factory=dict)
+    approval_requesters: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path) -> Policy:
@@ -51,6 +53,11 @@ class Policy:
                 executor=str((meta or {}).get("executor") or ""),
                 local_path=str((meta or {}).get("local_path") or ""),
                 default_delivery=str((meta or {}).get("default_delivery") or "push"),
+                verify_commands=[
+                    str(command)
+                    for command in ((meta or {}).get("verify_commands") or [])
+                    if str(command).strip()
+                ],
             )
         for name in data.get("allowed_repos", []):
             catalog.setdefault(name, RepoInfo(name=name, provider="github"))
@@ -65,6 +72,7 @@ class Policy:
             work_branch_prefix=data.get("work_branch_prefix", "ai/feishu"),
             default_executor=str(data.get("default_executor") or "vcs"),
             repo_catalog=catalog,
+            approval_requesters=[str(item) for item in data.get("approval_requesters", [])],
         )
 
     def provider_for(self, repo: str) -> str:
@@ -80,6 +88,11 @@ class Policy:
     def local_path_for(self, repo: str) -> str:
         info = self.repo_catalog.get(repo)
         return info.local_path if info else ""
+
+    def verify_commands_for(self, repo: str) -> list[str]:
+        """Return repository-owned verification commands in declared order."""
+        info = self.repo_catalog.get(repo)
+        return list(info.verify_commands) if info else []
 
     def resolve_executor(self, *, repo: str, executor_hint: str = "") -> str:
         hint = (executor_hint or "").strip().lower()
@@ -124,6 +137,12 @@ class Policy:
 
     def requires_approval(self, risk_level: RiskLevel) -> bool:
         return risk_level.value in self.require_approval_for_risk
+
+    def can_control_task(self, *, owner_id: str, operator_id: str) -> bool:
+        """Limit confirm/cancel/delivery actions to the owner or configured approvers."""
+        return bool(operator_id) and (
+            operator_id == owner_id or operator_id in self.approval_requesters
+        )
 
     def build_work_branch(self, task_id: str) -> str:
         slug = re.sub(r"[^a-zA-Z0-9-]+", "-", task_id).strip("-").lower()

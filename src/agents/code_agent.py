@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from feishu_claude_automation.config import Settings
+from feishu_claude_automation.executor_dispatcher import ExecutorDispatcher
 from feishu_claude_automation.models import Task, TaskMode, TaskRequest, TaskStatus, RiskLevel
 from feishu_claude_automation.policy import Policy
-from feishu_claude_automation.vcs import VcsDispatcher
 from agent_platform.models import PlatformTask, PlatformTaskStatus, utc_now
 from agent_platform.store import PlatformStore
 
@@ -19,7 +19,7 @@ class CodeAgentExecutor:
         self.settings = settings
         self.store = store
         self.policy = policy or Policy.load(settings.policy_file)
-        self.vcs = VcsDispatcher(settings, self.policy)
+        self.executor = ExecutorDispatcher(settings, self.policy)
 
     def can_handle(self, task: PlatformTask) -> bool:
         return task.agent_id in {"code", "github_actions", "gitlab_ci"} or task.inputs.get("repo")
@@ -31,7 +31,7 @@ class CodeAgentExecutor:
             repo = self.policy.resolve_repo(repo) or repo
         prompt = str(inputs.get("prompt") or task.goal)
         base_branch = str(inputs.get("base_branch") or "").strip()
-        work_branch = str(inputs.get("work_branch") or f"ai/dev-{task.id}")
+        work_branch = str(inputs.get("work_branch") or self.policy.build_work_branch(task.job_id))
         mode_raw = str(inputs.get("mode") or TaskMode.CREATE.value)
         mode = TaskMode(mode_raw) if mode_raw in {m.value for m in TaskMode} else TaskMode.CREATE
 
@@ -44,6 +44,9 @@ class CodeAgentExecutor:
             chat_id=task.chat_id,
             session_id=task.job_id,
             mode=mode,
+            executor=str(inputs.get("executor") or ""),
+            delivery=str(inputs.get("delivery") or ""),
+            model=str(inputs.get("model") or ""),
         )
         if not request.repo:
             raise ValueError("code task requires inputs.repo")
@@ -59,7 +62,7 @@ class CodeAgentExecutor:
 
     def dispatch(self, task: PlatformTask) -> None:
         legacy = self._to_legacy_task(task)
-        result = self.vcs.dispatch(legacy)
+        result = self.executor.dispatch(legacy)
         task.status = PlatformTaskStatus.RUNNING
         task.result = {"dispatch": result, "work_branch": legacy.work_branch, "repo": legacy.repo}
         task.updated_at = utc_now()
@@ -69,18 +72,29 @@ class CodeAgentExecutor:
         task_id = str(payload.get("job_id") or payload.get("task_id") or "")
         task = self.store.require_task(task_id)
         status = str(payload.get("status") or "").lower()
+        task.phase = str(payload.get("phase") or task.phase)
+        task.attempt_no = int(payload.get("attempt_no") or task.attempt_no)
 
         if status in {"running", "dispatched"}:
             task.status = PlatformTaskStatus.RUNNING
-        elif status in {"pr_created", "succeeded", "success", "completed"}:
+        elif status in {"pr_created", "updated", "succeeded", "success", "completed"}:
             task.status = PlatformTaskStatus.SUCCEEDED
             task.result = {
                 **task.result,
                 "pr_url": payload.get("pr_url", ""),
                 "summary": payload.get("summary", ""),
                 "commit_sha": payload.get("commit_sha", ""),
+                "remote_sha": payload.get("remote_sha", ""),
+                "verification": payload.get("verification") or {},
             }
+            task.commit_sha = str(payload.get("commit_sha") or task.commit_sha)
+            task.remote_sha = str(payload.get("remote_sha") or task.remote_sha)
+            task.mr_url = str(payload.get("pr_url") or task.mr_url)
+            task.verification = payload.get("verification") or task.verification
             task.error = ""
+        elif status in {"needs_attention", "awaiting_retry"}:
+            task.status = PlatformTaskStatus.NEEDS_ATTENTION
+            task.error = str(payload.get("error") or "worker needs attention")
         elif status in {"failed", "error", "cancelled"}:
             task.status = PlatformTaskStatus.FAILED
             task.error = str(payload.get("error") or "workflow failed")

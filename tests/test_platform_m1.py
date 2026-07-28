@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,9 @@ from feishu_claude_automation.config import Settings
 
 
 @pytest.fixture()
-def pg_url() -> str:
-    return "postgresql+psycopg://agent:agent@127.0.0.1:5432/agent_platform"
+def pg_url(tmp_path: Path) -> str:
+    """Use an isolated database unless CI explicitly provides a PostgreSQL test URL."""
+    return os.getenv("TEST_DATABASE_URL", f"sqlite:///{tmp_path / 'platform.db'}")
 
 
 @pytest.fixture()

@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from agent_platform.app import PlatformApp, build_platform_app
-from agent_platform.errors import PlatformError
+from agent_platform.errors import PlatformError, StaleLeaseError
 
 from .config import Settings
 from .orchestrator import Orchestrator
@@ -68,6 +68,84 @@ class AutomationHandler(BaseHTTPRequestHandler):
             return False
         return auth[7:].strip() == expected
 
+    def _register_feishu_inbox(
+        self,
+        payload: dict[str, Any],
+        *,
+        kind: str,
+    ) -> dict[str, Any] | None:
+        """Register a Feishu delivery before invoking the compatibility orchestrator."""
+        if self.platform is None or payload.get("type") == "url_verification":
+            return None
+        header = payload.get("header") if isinstance(payload.get("header"), dict) else {}
+        event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+        sender_id = sender.get("sender_id") if isinstance(sender.get("sender_id"), dict) else {}
+        action = event.get("action") if isinstance(event.get("action"), dict) else {}
+        context = action.get("context") if isinstance(action.get("context"), dict) else {}
+        event_context = event.get("context") if isinstance(event.get("context"), dict) else {}
+        event_id = str(header.get("event_id") or payload.get("event_id") or "")
+        message_id = str(
+            message.get("message_id")
+            or context.get("open_message_id")
+            or event_context.get("open_message_id")
+            or action.get("action_id")
+            or ""
+        )
+        chat_id = str(
+            message.get("chat_id")
+            or context.get("open_chat_id")
+            or event_context.get("open_chat_id")
+            or ""
+        )
+        if not (event_id or message_id) or not chat_id:
+            return None
+        return self.platform.store.register_inbound_message(
+            tenant_key=str(header.get("tenant_key") or payload.get("tenant_key") or "default"),
+            chat_id=chat_id,
+            event_id=event_id,
+            message_id=message_id,
+            requester_id=str(sender_id.get("open_id") or ""),
+            payload=payload,
+            kind=kind,
+        )
+
+    def _handle_feishu_idempotently(
+        self,
+        payload: dict[str, Any],
+        *,
+        kind: str,
+    ) -> dict[str, Any]:
+        """Execute a Feishu delivery once and replay its persisted result."""
+        inbox = self._register_feishu_inbox(payload, kind=kind)
+        if inbox and inbox["duplicate"] and inbox["status"] == "processed":
+            return {**inbox["result"], "idempotent_replay": True}
+        if inbox and not self.platform.store.claim_inbound_message(inbox["message_row_id"]):
+            return {
+                "task_id": inbox["task_id"],
+                "status": inbox["status"],
+                "idempotent_replay": True,
+            }
+        try:
+            if kind == "action":
+                result = self.orchestrator.handle_card_action(payload)
+            else:
+                result = self.orchestrator.handle_feishu_message(payload)
+            if inbox:
+                legacy_run_id = str(result.get("task_id") or "")
+                result = {
+                    **result,
+                    "task_id": inbox["task_id"],
+                    "run_id": legacy_run_id or result.get("run_id", ""),
+                }
+                self.platform.store.complete_inbound_message(inbox["message_row_id"], result)
+            return result
+        except Exception as exc:
+            if inbox:
+                self.platform.store.fail_inbound_message(inbox["message_row_id"], str(exc))
+            raise
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         if path == "/health":
@@ -103,27 +181,45 @@ class AutomationHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             if path == "/feishu/events":
-                result = self.orchestrator.handle_feishu_message(payload)
+                result = self._handle_feishu_idempotently(payload, kind="message")
                 self._log_request(path, payload, result=result)
                 self._send_json(HTTPStatus.OK, result)
                 return
             if path == "/feishu/actions":
-                result = self.orchestrator.handle_card_action(payload)
+                result = self._handle_feishu_idempotently(payload, kind="action")
                 self._log_request(path, payload, result=result)
                 self._send_json(HTTPStatus.OK, result)
                 return
             if path == "/callbacks/runner":
+                if payload.get("lease_token"):
+                    # Fencing validation prevents a superseded worker from changing user-visible state.
+                    self.orchestrator.executor.local_worker.heartbeat(
+                        payload,
+                        phase=str(payload.get("phase") or ""),
+                    )
                 if self.platform is not None:
                     try:
                         task = self.platform.bus.apply_callback(payload)
-                        result = {"task_id": task.id, "status": task.status.value, "via": "platform"}
+                        result = {
+                            "task_id": task.job_id,
+                            "run_id": task.id,
+                            "job_id": task.id,
+                            "status": task.status.value,
+                            "via": "platform",
+                        }
                         self._log_request(path, payload, result=result)
                         self._send_json(HTTPStatus.OK, result)
                         return
                     except PlatformError:
                         pass
                 task = self.orchestrator.handle_runner_callback(payload)
-                result = {"task_id": task.id, "status": task.status.value, "via": "legacy"}
+                result = {
+                    "task_id": task.session_id or task.id,
+                    "run_id": task.id,
+                    "job_id": task.id,
+                    "status": task.status.value,
+                    "via": "legacy",
+                }
                 self._log_request(path, payload, result=result)
                 self._send_json(HTTPStatus.OK, result)
                 return
@@ -138,6 +234,13 @@ class AutomationHandler(BaseHTTPRequestHandler):
                     agent_id=str(payload.get("agent_id") or ""),
                     inputs=payload.get("inputs") if isinstance(payload.get("inputs"), dict) else {},
                     auto_dispatch=bool(payload.get("auto_dispatch", True)),
+                    tenant_key=str(payload.get("tenant_key") or "default"),
+                    command_key=str(
+                        payload.get("command_key")
+                        or payload.get("idempotency_key")
+                        or payload.get("message_id")
+                        or ""
+                    ),
                 )
                 self._log_request(path, payload, result={"job_id": result["job"]["id"]})
                 self._send_json(HTTPStatus.CREATED, result)
@@ -147,7 +250,12 @@ class AutomationHandler(BaseHTTPRequestHandler):
                     self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "platform not enabled"})
                     return
                 task = self.platform.bus.apply_callback(payload)
-                result = {"task_id": task.id, "status": task.status.value}
+                result = {
+                    "task_id": task.job_id,
+                    "run_id": task.id,
+                    "job_id": task.id,
+                    "status": task.status.value,
+                }
                 self._log_request(path, payload, result=result)
                 self._send_json(HTTPStatus.OK, result)
                 return
@@ -158,7 +266,7 @@ class AutomationHandler(BaseHTTPRequestHandler):
                 from .models import Task, TaskMode, TaskStatus, RiskLevel
 
                 task = Task(
-                    id=str(payload.get("job_id") or payload.get("id") or ""),
+                    id=str(payload.get("run_id") or payload.get("job_id") or payload.get("id") or ""),
                     repo=str(payload.get("repo") or ""),
                     prompt=str(payload.get("prompt") or ""),
                     base_branch=str(payload.get("base_branch") or ""),
@@ -170,9 +278,11 @@ class AutomationHandler(BaseHTTPRequestHandler):
                     mode=TaskMode(str(payload.get("mode") or TaskMode.CREATE.value)),
                     executor=str(payload.get("executor") or "local_worker"),
                     delivery=str(payload.get("delivery") or "push"),
+                    model=str(payload.get("model") or ""),
+                    session_id=str(payload.get("task_id") or ""),
                 )
                 if not task.id:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "job_id is required"})
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "run_id/job_id is required"})
                     return
                 local_path = self.orchestrator.policy.local_path_for(task.repo)
                 if not local_path:
@@ -193,22 +303,66 @@ class AutomationHandler(BaseHTTPRequestHandler):
                 if not self._worker_authorized():
                     self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                     return
-                job = self.orchestrator.executor.local_worker.claim()
+                job = self.orchestrator.executor.local_worker.claim(
+                    worker_id=str(payload.get("worker_id") or "")
+                )
                 result = {"job": job}
-                self._log_request(path, payload, result={"job_id": job.get("job_id") if job else None})
+                self._log_request(path, payload, result={"run_id": job.get("run_id") if job else None})
                 self._send_json(HTTPStatus.OK, result)
+                return
+            if path == "/v1/worker/jobs/heartbeat":
+                if not self._worker_authorized():
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return
+                result = self.orchestrator.executor.local_worker.heartbeat(
+                    payload,
+                    phase=str(payload.get("phase") or ""),
+                )
+                self._send_json(HTTPStatus.OK, result)
+                return
+            if path == "/v1/worker/jobs/events":
+                if not self._worker_authorized():
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return
+                result = self.orchestrator.executor.local_worker.event(
+                    payload,
+                    sequence=int(payload.get("sequence") or 0),
+                    event_type=str(payload.get("event_type") or "progress"),
+                    phase=str(payload.get("phase") or ""),
+                    payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+                )
+                self._send_json(HTTPStatus.OK, result)
+                return
+            if path == "/v1/worker/jobs/cancel":
+                if not self._worker_authorized():
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return
+                run_id = str(payload.get("run_id") or payload.get("job_id") or "")
+                if not run_id:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "run_id/job_id is required"})
+                    return
+                result = self.orchestrator.executor.local_worker.cancel(
+                    run_id,
+                    reason=str(payload.get("reason") or "cancelled by user"),
+                )
+                self._send_json(HTTPStatus.OK, result or {"run_id": run_id, "status": "not_found"})
                 return
             if path == "/v1/worker/jobs/complete":
                 if not self._worker_authorized():
                     self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                     return
-                job_id = str(payload.get("job_id") or "")
-                if not job_id:
-                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "job_id is required"})
+                run_id = str(payload.get("run_id") or payload.get("job_id") or "")
+                if not run_id:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "run_id/job_id is required"})
                     return
                 status = str(payload.get("status") or "completed")
-                self.orchestrator.executor.local_worker.complete(job_id, status=status)
-                result = {"job_id": job_id, "status": status}
+                completed = self.orchestrator.executor.local_worker.complete(
+                    {**payload, "run_id": run_id},
+                    status=status,
+                    result=payload.get("result") if isinstance(payload.get("result"), dict) else {},
+                    error=str(payload.get("error") or ""),
+                )
+                result = completed or {"run_id": run_id, "job_id": run_id, "status": status}
                 self._log_request(path, payload, result=result)
                 self._send_json(HTTPStatus.OK, result)
                 return
@@ -234,6 +388,9 @@ class AutomationHandler(BaseHTTPRequestHandler):
         except PolicyError as exc:
             self._log_request(path, payload, error=str(exc))
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except StaleLeaseError as exc:
+            self._log_request(path, payload, error=str(exc))
+            self._send_json(HTTPStatus.CONFLICT, {"error": str(exc), "code": "stale_lease"})
         except PlatformError as exc:
             self._log_request(path, payload, error=str(exc))
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
@@ -253,11 +410,9 @@ def create_server(settings: Settings | None = None, *, enable_platform: bool = T
     orchestrator = Orchestrator(settings)
     platform_app: PlatformApp | None = None
     if enable_platform:
-        try:
-            platform_app = build_platform_app(settings)
-        except Exception as exc:  # noqa: BLE001
-            print(f"warning: platform disabled ({exc})")
-            platform_app = None
+        # PostgreSQL is the production source of truth; startup must fail instead of
+        # silently falling back to the legacy JSON stores.
+        platform_app = build_platform_app(settings)
     handler = type("ConfiguredAutomationHandler", (AutomationHandler,), {})
     handler.orchestrator = orchestrator
     handler.platform = platform_app

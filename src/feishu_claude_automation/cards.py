@@ -15,6 +15,12 @@ DELIVERY_LABELS = {
     "local_only": "仅本机工作区",
 }
 
+MODEL_LABELS = {
+    "kimi-for-coding": "Kimi K2.7 Code (kimi-for-coding)",
+    "k3": "Kimi K3 (k3)",
+    "kimi-for-coding-highspeed": "Kimi K2.7 HighSpeed",
+}
+
 
 def _executor_label(value: str) -> str:
     return EXECUTOR_LABELS.get(value, value or "自动")
@@ -22,6 +28,12 @@ def _executor_label(value: str) -> str:
 
 def _delivery_label(value: str) -> str:
     return DELIVERY_LABELS.get(value, value or "推远程并开 PR/MR")
+
+
+def _model_label(value: str) -> str:
+    if not value:
+        return "默认（见 ANTHROPIC_MODEL）"
+    return MODEL_LABELS.get(value, value)
 
 
 def build_task_card(task: Task) -> dict:
@@ -32,6 +44,8 @@ def build_task_card(task: Task) -> dict:
         TaskStatus.DISPATCHED: "已派发",
         TaskStatus.RUNNING: "执行中",
         TaskStatus.PR_CREATED: "已创建 PR",
+        TaskStatus.AWAITING_RETRY: "等待重试",
+        TaskStatus.NEEDS_ATTENTION: "需要处理",
         TaskStatus.FAILED: "失败",
         TaskStatus.CANCELLED: "已取消",
     }[task.status]
@@ -39,6 +53,7 @@ def build_task_card(task: Task) -> dict:
     mode_label = "迭代" if task.mode.value == "iterate" else "新建"
     executor_label = _executor_label(task.executor)
     delivery_label = _delivery_label(task.delivery)
+    model_label = _model_label(task.model)
     elements: list[dict] = [
         {
             "tag": "div",
@@ -49,11 +64,13 @@ def build_task_card(task: Task) -> dict:
                     f"**模式**: {mode_label}\n"
                     f"**执行方式**: {executor_label}\n"
                     f"**交付方式**: {delivery_label}\n"
+                    f"**执行模型**: {model_label}\n"
                     f"**仓库**: `{task.repo}`\n"
                     f"**基线分支**: `{task.base_branch}`\n"
                     f"**工作分支**: `{task.work_branch}`\n"
                     f"**风险等级**: `{task.risk_level.value}`\n"
                     f"**状态**: {status_label}\n"
+                    f"**执行阶段**: `{task.phase or '-'}`\n"
                     f"**需求**: {task.prompt}"
                 ),
             },
@@ -112,7 +129,12 @@ def build_task_card(task: Task) -> dict:
                 },
             ]
         )
-    elif task.status in {TaskStatus.PR_CREATED, TaskStatus.FAILED}:
+    elif task.status in {
+        TaskStatus.PR_CREATED,
+        TaskStatus.FAILED,
+        TaskStatus.AWAITING_RETRY,
+        TaskStatus.NEEDS_ATTENTION,
+    }:
         actions.append(
             {
                 "tag": "button",
@@ -129,7 +151,11 @@ def build_task_card(task: Task) -> dict:
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": "Claude 代码自动化任务"},
-            "template": "blue" if task.status != TaskStatus.FAILED else "red",
+            "template": (
+                "red"
+                if task.status in {TaskStatus.FAILED, TaskStatus.NEEDS_ATTENTION}
+                else "blue"
+            ),
         },
         "elements": elements,
     }
@@ -138,6 +164,7 @@ def build_task_card(task: Task) -> dict:
 def build_confirm_plan_card(session: ConversationSession) -> dict:
     executor_label = _executor_label(session.executor)
     delivery_label = _delivery_label(session.delivery)
+    model_label = _model_label(session.model)
     elements: list[dict] = [
         {
             "tag": "div",
@@ -147,6 +174,7 @@ def build_confirm_plan_card(session: ConversationSession) -> dict:
                     f"**会话 ID**: `{session.id}`\n"
                     f"**执行方式**: {executor_label}\n"
                     f"**交付方式**: {delivery_label}\n"
+                    f"**执行模型**: {model_label}\n"
                     f"**仓库**: `{session.repo}`\n"
                     f"**基线分支**: `{session.base_branch}`\n"
                     f"**工作分支**: `{session.work_branch or '(自动生成)'}`\n"

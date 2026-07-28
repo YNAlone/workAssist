@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,13 @@ _KIMI_MODEL_ALIASES = {
     "kimi-k3": "k3",
     "kimi_k3": "k3",
 }
+_MODEL_ID_GROUP = r"(kimi-for-coding-highspeed|kimi-for-coding|kimi-k3|k3)"
+_MODEL_FROM_TEXT_PATTERNS = (
+    re.compile(rf"(?:执行)?模型\s*[:=]?\s*{_MODEL_ID_GROUP}", re.IGNORECASE),
+    re.compile(rf"model\s*[:=]\s*{_MODEL_ID_GROUP}", re.IGNORECASE),
+    re.compile(rf"(?:使用|用|切换到|换成|改用)\s*(?:模型\s*)?{_MODEL_ID_GROUP}", re.IGNORECASE),
+    re.compile(rf"{_MODEL_ID_GROUP}\s*模型", re.IGNORECASE),
+)
 
 
 def _bool(value: str | None, default: bool = False) -> bool:
@@ -35,6 +43,26 @@ def normalize_kimi_model(value: str | None, default: str = "kimi-for-coding") ->
         f"Unsupported model {raw!r}. Choose one of: {', '.join(ALLOWED_KIMI_MODELS)} "
         "(aliases: K3, kimi-k3)."
     )
+
+
+def try_normalize_kimi_model(value: str | None) -> str | None:
+    """Return canonical model id, or None when empty/unsupported."""
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        return normalize_kimi_model(raw)
+    except ValueError:
+        return None
+
+
+def extract_model_from_text(text: str) -> str | None:
+    """Detect an explicit coding-model preference in natural language."""
+    for pattern in _MODEL_FROM_TEXT_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            return try_normalize_kimi_model(match.group(1))
+    return None
 
 
 @dataclass(frozen=True)
@@ -72,6 +100,15 @@ class Settings:
     anthropic_api_key: str
     anthropic_base_url: str
     anthropic_model: str
+    database_url: str = ""
+    local_worker_id: str = ""
+    local_worker_lease_seconds: int = 45
+    local_worker_heartbeat_seconds: int = 10
+    local_worker_max_recoveries: int = 1
+    local_worker_worktree_root: Path = Path("data/worktrees")
+    local_worker_log_root: Path = Path("data/worker-logs")
+    local_worker_log_retention_days: int = 14
+    local_worker_max_repair_loops: int = 2
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -118,4 +155,24 @@ class Settings:
             or "",
             anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.kimi.com/coding/"),
             anthropic_model=normalize_kimi_model(os.getenv("ANTHROPIC_MODEL"), "kimi-for-coding"),
+            database_url=os.getenv(
+                "DATABASE_URL",
+                "postgresql+psycopg://agent:agent@127.0.0.1:5432/agent_platform",
+            ),
+            local_worker_id=os.getenv("LOCAL_WORKER_ID", ""),
+            local_worker_lease_seconds=int(os.getenv("LOCAL_WORKER_LEASE_SECONDS", "45")),
+            local_worker_heartbeat_seconds=int(os.getenv("LOCAL_WORKER_HEARTBEAT_SECONDS", "10")),
+            local_worker_max_recoveries=int(os.getenv("LOCAL_WORKER_MAX_RECOVERIES", "1")),
+            local_worker_worktree_root=Path(
+                os.getenv("LOCAL_WORKER_WORKTREE_ROOT", root / "data/worktrees")
+            ),
+            local_worker_log_root=Path(
+                os.getenv("LOCAL_WORKER_LOG_ROOT", root / "data/worker-logs")
+            ),
+            local_worker_log_retention_days=int(
+                os.getenv("LOCAL_WORKER_LOG_RETENTION_DAYS", "14")
+            ),
+            local_worker_max_repair_loops=int(
+                os.getenv("LOCAL_WORKER_MAX_REPAIR_LOOPS", "2")
+            ),
         )

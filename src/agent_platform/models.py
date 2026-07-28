@@ -29,6 +29,8 @@ class JobStatus(str, Enum):
     PARTIAL = "partial"
     DONE = "done"
     FAILED = "failed"
+    AWAITING_RETRY = "awaiting_retry"
+    NEEDS_ATTENTION = "needs_attention"
     CANCELLED = "cancelled"
 
 
@@ -38,6 +40,7 @@ class PlatformTaskStatus(str, Enum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    NEEDS_ATTENTION = "needs_attention"
     CANCELLED = "cancelled"
 
 
@@ -69,6 +72,15 @@ class PlatformTask:
     error: str = ""
     chat_id: str = ""
     requester_id: str = ""
+    command_key: str = ""
+    iteration: int = 1
+    phase: str = "queued"
+    attempt_no: int = 0
+    verification: dict[str, Any] = field(default_factory=dict)
+    commit_sha: str = ""
+    remote_sha: str = ""
+    mr_url: str = ""
+    ci_status: str = ""
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
@@ -112,6 +124,15 @@ class PlatformTask:
             error=data.get("error", ""),
             chat_id=data.get("chat_id", ""),
             requester_id=data.get("requester_id", ""),
+            command_key=data.get("command_key", ""),
+            iteration=int(data.get("iteration", 1)),
+            phase=data.get("phase", "queued"),
+            attempt_no=int(data.get("attempt_no", 0)),
+            verification=data.get("verification") or {},
+            commit_sha=data.get("commit_sha", ""),
+            remote_sha=data.get("remote_sha", ""),
+            mr_url=data.get("mr_url", ""),
+            ci_status=data.get("ci_status", ""),
             created_at=data.get("created_at", utc_now()),
             updated_at=data.get("updated_at", utc_now()),
         )
@@ -126,12 +147,33 @@ class Job:
     status: JobStatus = JobStatus.RECEIVED
     task_ids: list[str] = field(default_factory=list)
     plan: dict[str, Any] = field(default_factory=dict)
+    tenant_key: str = "default"
+    repo: str = ""
+    base_branch: str = ""
+    work_branch: str = ""
+    worktree_path: str = ""
+    current_run_id: str = ""
+    claude_session_id: str = ""
+    version: int = 1
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
     @classmethod
-    def create(cls, *, goal: str, requester_id: str = "", chat_id: str = "") -> Job:
-        return cls(id=new_id(), requester_id=requester_id, chat_id=chat_id, goal=goal)
+    def create(
+        cls,
+        *,
+        goal: str,
+        requester_id: str = "",
+        chat_id: str = "",
+        tenant_key: str = "default",
+    ) -> Job:
+        return cls(
+            id=new_id(),
+            requester_id=requester_id,
+            chat_id=chat_id,
+            tenant_key=tenant_key,
+            goal=goal,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -149,6 +191,14 @@ class Job:
             status=JobStatus(status) if not isinstance(status, JobStatus) else status,
             task_ids=list(data.get("task_ids") or []),
             plan=data.get("plan") or {},
+            tenant_key=data.get("tenant_key", "default"),
+            repo=data.get("repo", ""),
+            base_branch=data.get("base_branch", ""),
+            work_branch=data.get("work_branch", ""),
+            worktree_path=data.get("worktree_path", ""),
+            current_run_id=data.get("current_run_id", ""),
+            claude_session_id=data.get("claude_session_id", ""),
+            version=int(data.get("version", 1)),
             created_at=data.get("created_at", utc_now()),
             updated_at=data.get("updated_at", utc_now()),
         )

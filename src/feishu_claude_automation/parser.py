@@ -44,6 +44,7 @@ def parse_command(text: str) -> TaskRequest | None:
         work_branch=fields.get("work_branch", ""),
         executor=fields.get("executor", ""),
         delivery=fields.get("delivery", ""),
+        model=fields.get("model", ""),
     )
 
 

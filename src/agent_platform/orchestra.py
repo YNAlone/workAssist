@@ -4,7 +4,7 @@ from typing import Any
 
 from .bus import TaskBus
 from .errors import ValidationError
-from .models import Job, JobStatus, utc_now
+from .models import Job, JobStatus, PlatformTaskStatus, utc_now
 from .planner import Planner
 from .store import PlatformStore
 
@@ -26,15 +26,34 @@ class Orchestra:
         agent_id: str = "",
         inputs: dict[str, Any] | None = None,
         auto_dispatch: bool = True,
+        tenant_key: str = "default",
+        command_key: str = "",
     ) -> dict[str, Any]:
         goal = (goal or "").strip()
         if not goal:
             raise ValidationError("goal is required")
 
-        job = Job.create(goal=goal, requester_id=requester_id, chat_id=chat_id)
+        if chat_id:
+            job, created = self.store.get_or_create_chat_task(
+                tenant_key=tenant_key,
+                chat_id=chat_id,
+                goal=goal,
+                requester_id=requester_id,
+                repo=str((inputs or {}).get("repo") or ""),
+                base_branch=str((inputs or {}).get("base_branch") or ""),
+            )
+            if created:
+                self.store.append_audit(event="job.created", job_id=job.id, payload={"goal": goal})
+        else:
+            job = Job.create(
+                goal=goal,
+                requester_id=requester_id,
+                chat_id=chat_id,
+                tenant_key=tenant_key,
+            )
+            self.store.save_job(job)
+            self.store.append_audit(event="job.created", job_id=job.id, payload={"goal": goal})
         job.status = JobStatus.PLANNED
-        self.store.save_job(job)
-        self.store.append_audit(event="job.created", job_id=job.id, payload={"goal": goal})
 
         tasks = self.planner.plan_tasks(
             job_id=job.id,
@@ -47,16 +66,31 @@ class Orchestra:
         job.plan = {
             "tasks": [{"agent_id": t.agent_id, "goal": t.goal, "inputs": t.inputs} for t in tasks]
         }
-        job.task_ids = [t.id for t in tasks]
-        self.store.save_job(job)
-
         dispatched: list[dict[str, Any]] = []
-        for task in tasks:
-            self.store.save_task(task)
+        next_iteration = len(self.store.list_tasks_for_job(job.id)) + 1
+        for index, task in enumerate(tasks, start=1):
+            task.job_id = job.id
+            if command_key:
+                task, _ = self.store.create_run_idempotent(
+                    task_id=job.id,
+                    command_key=f"{command_key}:{task.agent_id}",
+                    agent_id=task.agent_id,
+                    goal=task.goal,
+                    inputs=task.inputs,
+                    requester_id=requester_id,
+                )
+            else:
+                task.iteration = next_iteration + index - 1
+                self.store.save_task(task)
             if auto_dispatch:
-                task = self.bus.dispatch_task(task)
+                if task.status == PlatformTaskStatus.QUEUED:
+                    task = self.bus.dispatch_task(task)
             dispatched.append(task.to_dict())
 
+        job.task_ids = [t.id for t in self.store.list_tasks_for_job(job.id)]
+        if dispatched:
+            job.current_run_id = dispatched[-1]["id"]
+        self.store.save_job(job)
         job = self.bus.refresh_job_status(job.id)
         if auto_dispatch and job.status == JobStatus.PLANNED:
             job.status = JobStatus.RUNNING
@@ -64,6 +98,8 @@ class Orchestra:
             self.store.save_job(job)
 
         return {
+            "task_id": job.id,
+            "run_id": dispatched[-1]["id"] if dispatched else "",
             "job": job.to_dict(),
             "tasks": dispatched,
         }

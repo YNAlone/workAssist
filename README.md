@@ -118,7 +118,7 @@ flowchart LR
 - `LOCAL_WORKER_TOKEN`：Worker 入队/claim API 的 Bearer Token。
 - `LOCAL_WORKER_QUEUE_PATH`：本机任务队列 JSON 路径。
 - `LOCAL_WORKER_ORCHESTRATOR_URL`：远程 Worker 模式下 Orchestrator 的地址（留空则读本地队列文件）。
-- `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`：本机 Worker / CI 调度用模型（`kimi-for-coding` 或 `k3`）。
+- `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`：本机 Worker / CI 默认执行模型（`kimi-for-coding` 或 `k3`）。会话中可临时覆盖，例如「用 k3」或 `/ai-fix ... model=k3`。
 
 在 `config/policy.example.json` 的 `repo_catalog` 中为仓库配置 `executor`、`local_path`、`default_delivery`：
 

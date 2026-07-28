@@ -96,9 +96,12 @@ class TaskBus:
         statuses = {t.status for t in tasks}
         if statuses == {PlatformTaskStatus.SUCCEEDED}:
             job.status = JobStatus.DONE
-        elif statuses == {PlatformTaskStatus.FAILED}:
-            job.status = JobStatus.FAILED
-        elif PlatformTaskStatus.FAILED in statuses and PlatformTaskStatus.SUCCEEDED in statuses:
+        elif statuses <= {PlatformTaskStatus.FAILED, PlatformTaskStatus.NEEDS_ATTENTION}:
+            job.status = JobStatus.NEEDS_ATTENTION
+        elif (
+            PlatformTaskStatus.FAILED in statuses
+            or PlatformTaskStatus.NEEDS_ATTENTION in statuses
+        ) and PlatformTaskStatus.SUCCEEDED in statuses:
             job.status = JobStatus.PARTIAL
         elif any(s in statuses for s in (PlatformTaskStatus.RUNNING, PlatformTaskStatus.DISPATCHED, PlatformTaskStatus.QUEUED)):
             job.status = JobStatus.RUNNING

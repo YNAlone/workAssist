@@ -7,7 +7,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
-from .config import Settings
+from .config import Settings, extract_model_from_text, try_normalize_kimi_model
 from .models import ConversationSession
 
 
@@ -33,6 +33,7 @@ class IntentResult:
     confidence: float = 0.0
     executor: str = ""
     delivery: str = ""
+    model: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> IntentResult:
@@ -46,6 +47,7 @@ class IntentResult:
             confidence = float(data.get("confidence", 0.0))
         except (TypeError, ValueError):
             confidence = 0.0
+        model = try_normalize_kimi_model(str(data.get("model", "") or "")) or ""
         return cls(
             action=action,
             repo=str(data.get("repo", "") or ""),
@@ -57,6 +59,7 @@ class IntentResult:
             confidence=confidence,
             executor=str(data.get("executor", "") or ""),
             delivery=str(data.get("delivery", "") or ""),
+            model=model,
         )
 
 
@@ -71,12 +74,13 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
   "missing_fields": ["repo"|"base_branch"|"prompt" 等缺失项],
   "confidence": 0.0-1.0,
   "executor": "local_worker|github_actions|gitlab_ci|vcs 或留空",
-  "delivery": "push|local_only 或留空"
+  "delivery": "push|local_only 或留空",
+  "model": "kimi-for-coding|k3|kimi-for-coding-highspeed 或留空"
 }
 
 规则：
 1. 新需求缺仓库、基线分支或具体改动描述时用 clarify，并在 reply_to_user 追问。
-2. 信息齐全、尚未确认执行时用 confirm_plan，reply 中简述计划。
+2. 信息齐全、尚未确认执行时用 confirm_plan，reply 中简述计划（含选定的执行模型）。
 3. 用户明确确认（确认/执行/开始吧）且计划齐全时用 execute。
 4. 已有 PR/工作分支后，用户要求继续改用 iterate，prompt 写本轮增量。
 5. 用户取消用 cancel；闲聊/问能力用 chitchat。
@@ -85,6 +89,7 @@ SYSTEM_PROMPT = """你是飞书代码自动化助手的意图解析器。根据�
 8. 不要编造未提供的需求细节。
 9. 用户说「本机跑」「本地 worker」「不用 CI」时 executor=local_worker。
 10. 用户说「只改本地」「不要推远程」「不要开 PR」时 delivery=local_only；说「推远程」「开 PR/MR」时 delivery=push。
+11. 用户明确指定执行模型时填写 model：可用 kimi-for-coding、k3（或 K3）、kimi-for-coding-highspeed；未指定则留空（沿用会话已有或系统默认）。
 """
 
 
@@ -140,7 +145,11 @@ class LLMClient:
                             "prompt": session.prompt,
                             "pr_url": session.pr_url,
                             "current_task_id": session.current_task_id,
+                            "model": session.model,
+                            "executor": session.executor,
+                            "delivery": session.delivery,
                         },
+                        "allowed_models": ["kimi-for-coding", "k3", "kimi-for-coding-highspeed"],
                     },
                     ensure_ascii=False,
                 ),
@@ -309,6 +318,8 @@ class LLMClient:
         elif any(word in text for word in ("推远程", "开 pr", "开pr", "开 mr", "开mr", "推送远程")):
             delivery = "push"
 
+        model = extract_model_from_text(text) or session.model
+
         missing: list[str] = []
         if not repo:
             missing.append("repo")
@@ -336,6 +347,7 @@ class LLMClient:
                 confidence=0.7,
                 executor=executor,
                 delivery=delivery,
+                model=model,
             )
 
         return IntentResult(
@@ -348,4 +360,5 @@ class LLMClient:
             confidence=0.85,
             executor=executor,
             delivery=delivery,
+            model=model,
         )
