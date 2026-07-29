@@ -8,7 +8,7 @@ from .cards import build_confirm_plan_card, build_task_card
 from .config import Settings, extract_model_from_text, normalize_kimi_model
 from .feishu import FeishuClient
 from .feishu_docs import FeishuDocService
-from .llm import IntentResult, LLMClient
+from .llm import IntentResult, LLMClient, looks_like_read_only_analysis
 from .models import (
     ConversationSession,
     SessionStatus,
@@ -25,10 +25,12 @@ from .parser import (
     parse_command,
     strip_feishu_mentions,
 )
+from .message_content import enrich_message_for_llm, parse_feishu_event_message
 from .policy import Policy, PolicyError
 from .session_store import SessionStore
 from .store import TaskStore
 from .executor_dispatcher import ExecutorDispatcher
+from .feishu_event_dedup import FeishuEventDedup
 
 
 class Orchestrator:
@@ -41,6 +43,20 @@ class Orchestrator:
         self.feishu = FeishuClient(settings)
         self.executor = ExecutorDispatcher(settings, self.policy)
         self.llm = LLMClient(settings)
+        dedup_path = settings.audit_log_path.parent / "feishu_event_dedup.json"
+        self.feishu_dedup = FeishuEventDedup(dedup_path)
+
+    @staticmethod
+    def _feishu_dedup_key(payload: dict) -> str:
+        header = payload.get("header") or {}
+        event_id = str(header.get("event_id") or "").strip()
+        if event_id:
+            return f"event:{event_id}"
+        event_body = payload.get("event") or {}
+        message_id = str((event_body.get("message") or {}).get("message_id") or "").strip()
+        if message_id:
+            return f"message:{message_id}"
+        return ""
 
     def _append_audit(self, task: Task, event: str, **payload: object) -> None:
         task.audit.append({"timestamp": utc_now(), "event": event, **payload})
@@ -48,7 +64,15 @@ class Orchestrator:
 
     def _notify(self, task: Task) -> None:
         try:
-            self.feishu.notify_task(task, build_task_card(task))
+            self.feishu.notify_task(
+                task,
+                build_task_card(
+                    task,
+                    # Old card buttons require a public HTTP callback. Long connection
+                    # mode uses the existing text commands (confirm/cancel) instead.
+                    interactive=not self.settings.feishu_long_connection_enabled,
+                ),
+            )
         except Exception as exc:  # noqa: BLE001 - notification must not fail the main flow
             self._append_audit(task, "feishu.notify_failed", error=str(exc))
             self.store.save(task)
@@ -61,20 +85,44 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001
             self.audit.record("feishu.text_failed", error=str(exc), chat_id=chat_id)
 
+    @staticmethod
+    def _last_progress_phase(task: Task) -> str:
+        for event in reversed(task.audit):
+            if event.get("event") == "worker.progress":
+                return str(event.get("phase") or "")
+        return ""
+
+    def _notify_progress(self, task: Task, *, phase: str, progress: int, message: str) -> None:
+        """Send one concise Feishu reply per Worker phase instead of streaming model logs."""
+        if not task.chat_id or not message:
+            return
+        prefix = f"任务 `{task.id}` 进度 {progress}%"
+        self._reply_text(task.chat_id, f"{prefix}：{message}", task.message_id)
+
     def _active_job_count(self) -> int:
         return len(self.store.list_active())
 
     def create_task(self, request: TaskRequest) -> Task:
         if request.repo:
             request.repo = self.policy.resolve_repo(request.repo) or request.repo
-        request.base_branch = (request.base_branch or "").strip()
+        # Commands and HTTP requests bypass the intent LLM, so apply the same
+        # safe read-only classification before allocating a work branch.
+        request.analysis_only = request.analysis_only or looks_like_read_only_analysis(request.prompt)
+        request.base_branch = self.policy.resolve_base_branch(
+            repo=request.repo,
+            branch_hint=request.base_branch,
+        )
         self.policy.validate_request(request)
         if self._active_job_count() >= self.policy.max_concurrent_jobs:
             raise PolicyError("Too many active jobs")
 
         risk_level = self.policy.classify_risk(request.prompt)
         task_id = uuid4().hex[:12]
-        if request.mode == TaskMode.ITERATE and request.work_branch:
+        if request.analysis_only:
+            # Read-only tasks run in a detached temporary worktree. They must not
+            # allocate or reuse a repository work branch.
+            work_branch = ""
+        elif request.mode == TaskMode.ITERATE and request.work_branch:
             work_branch = request.work_branch
             self.policy.ensure_work_branch_allowed(work_branch)
         elif request.mode == TaskMode.CREATE:
@@ -196,7 +244,16 @@ class Orchestrator:
     def handle_runner_callback(self, payload: dict) -> Task:
         task_id = payload.get("job_id", "")
         task = self._require_task(task_id)
-        status = payload.get("status", "")
+        status = str(payload.get("status", ""))
+        phase = str(payload.get("phase") or "").strip()[:100]
+        message = str(payload.get("message") or "").strip()[:500]
+        try:
+            progress = max(0, min(100, int(payload.get("progress", 0))))
+        except (TypeError, ValueError):
+            progress = 0
+        previous_phase = self._last_progress_phase(task)
+        is_progress_update = status == "running" and bool(phase)
+
         task.summary = payload.get("summary", task.summary)
         if payload.get("pr_url"):
             task.pr_url = payload.get("pr_url", task.pr_url)
@@ -243,6 +300,11 @@ class Orchestrator:
         else:
             session_status = None
 
+        if is_progress_update:
+            # Keep the latest phase visible through GET /tasks/{id}; final callbacks
+            # replace this transient summary with the report or delivery result.
+            task.summary = f"进度 {progress}%：{message}" if message else f"进度 {progress}%：{phase}"
+
         delivery = str(payload.get("delivery") or task.delivery)
         if worktree_path and delivery == "local_only" and worktree_path not in task.summary:
             task.summary = (task.summary + f"\n本机工作区：{worktree_path}").strip()
@@ -251,11 +313,25 @@ class Orchestrator:
             if preview not in task.summary:
                 task.summary = (task.summary + f"\n\n变更摘要：\n{preview}").strip()
 
-        task = self.store.save(task)
+        if is_progress_update:
+            self._append_audit(
+                task,
+                "worker.progress",
+                phase=phase,
+                progress=progress,
+                message=message,
+            )
         self._append_audit(task, "runner.callback", status=status)
+        task = self.store.save(task)
         if session_status is not None:
             self._sync_session_from_task(task, session_status)
-        self._notify(task)
+        if is_progress_update:
+            # A Worker only emits milestones, but ignore a retry of the same phase
+            # so a transient callback retry cannot spam the Feishu conversation.
+            if phase != previous_phase:
+                self._notify_progress(task, phase=phase, progress=progress, message=message)
+        else:
+            self._notify(task)
         if status in {"pr_created", "updated", "completed", "succeeded"} and (
             report_markdown or report_url
         ):
@@ -332,12 +408,14 @@ class Orchestrator:
         # Feishu url_verification uses top-level token; event schema 2.0 uses header.token.
         return str(payload.get("token") or payload.get("header", {}).get("token") or "")
 
-    def handle_feishu_message(self, payload: dict) -> dict:
+    def handle_feishu_message(self, payload: dict, *, trusted: bool = False) -> dict:
         challenge = self._handle_url_verification(payload)
         if challenge is not None:
             return challenge
 
-        if not self.feishu.verify_token(self._extract_verification_token(payload)):
+        # Public webhooks must present the configured verification token. Events sent
+        # over Feishu's SDK long connection were authenticated during connection setup.
+        if not trusted and not self.feishu.verify_token(self._extract_verification_token(payload)):
             raise PolicyError("Invalid Feishu verification token")
 
         event = payload.get("header", {}).get("event_type") or payload.get("event", {}).get("type")
@@ -345,7 +423,13 @@ class Orchestrator:
             self.audit.record("feishu.ignored", reason="unsupported_event", event=event)
             return {"ignored": True, "event": event}
 
+        dedup_key = self._feishu_dedup_key(payload)
+        if dedup_key and not self.feishu_dedup.try_claim(dedup_key):
+            self.audit.record("feishu.duplicate", key=dedup_key)
+            return {"ignored": True, "reason": "duplicate_event", "key": dedup_key}
+
         text = extract_message_text(payload)
+        parsed_message = enrich_message_for_llm(parse_feishu_event_message(payload), self.feishu)
         event_body = payload.get("event", {})
         sender = event_body.get("sender", {}).get("sender_id", {})
         requester_id = sender.get("open_id") or sender.get("user_id") or ""
@@ -365,6 +449,7 @@ class Orchestrator:
             requester_id=requester_id,
             chat_id=chat_id,
             message_id=message_id,
+            parsed_message=parsed_message,
         )
 
     def _handle_natural_language(
@@ -374,10 +459,20 @@ class Orchestrator:
         requester_id: str,
         chat_id: str,
         message_id: str,
+        parsed_message=None,
     ) -> dict:
         cleaned = strip_feishu_mentions(text)
-        if not cleaned:
+        llm_text = ""
+        llm_content: str | list | None = None
+        if parsed_message is not None:
+            llm_text = parsed_message.to_llm_text()
+            llm_content = parsed_message.to_llm_content()
+            if not cleaned:
+                cleaned = strip_feishu_mentions(parsed_message.plain_text())
+        if not cleaned and (parsed_message is None or parsed_message.is_empty()):
             return {"ignored": True, "reason": "empty message"}
+        if not cleaned:
+            cleaned = llm_text or "[non-text feishu message]"
 
         session = self.sessions.get_active(chat_id, requester_id)
         if not session:
@@ -427,10 +522,12 @@ class Orchestrator:
 
         try:
             intent = self.llm.interpret(
-                user_text=cleaned,
+                user_text=llm_text or cleaned,
+                user_content=llm_content,
                 session=session,
                 allowed_repos=self.policy.allowed_repos,
                 default_base_branch=self.policy.default_base_branch,
+                repo_default_branches=self.policy.repo_default_branches(),
             )
         except Exception as exc:  # noqa: BLE001
             self.audit.record("llm.failed", error=str(exc), session_id=session.id)
@@ -442,7 +539,7 @@ class Orchestrator:
             return {"session_id": session.id, "error": str(exc)}
 
         self._merge_intent_into_session(session, intent)
-        session.append_message("user", cleaned)
+        session.append_message("user", llm_text or cleaned)
         if intent.reply_to_user:
             session.append_message("assistant", intent.reply_to_user)
         self.sessions.save(session)
@@ -456,10 +553,21 @@ class Orchestrator:
         )
 
     def _merge_intent_into_session(self, session: ConversationSession, intent: IntentResult) -> None:
+        previous_repo = session.repo
+        explicit_base_branch = (intent.base_branch or "").strip()
         if intent.repo:
             session.repo = self.policy.resolve_repo(intent.repo) or intent.repo
-        if intent.base_branch:
-            session.base_branch = intent.base_branch.strip()
+        if explicit_base_branch:
+            session.base_branch = explicit_base_branch
+        # A repo switch without an explicit branch must not accidentally retain
+        # the previous repository's branch. Fill only from configured defaults.
+        if session.repo and (
+            not session.base_branch or (session.repo != previous_repo and not explicit_base_branch)
+        ):
+            session.base_branch = self.policy.resolve_base_branch(
+                repo=session.repo,
+                branch_hint=session.base_branch if session.repo == previous_repo else "",
+            )
         if intent.work_branch_hint:
             session.work_branch = intent.work_branch_hint
         if intent.prompt:
@@ -468,12 +576,22 @@ class Orchestrator:
             session.executor = intent.executor
         if intent.delivery:
             session.delivery = intent.delivery
+<<<<<<< HEAD
         if intent.model:
             session.model = intent.model
 
     def _resolve_model(self, preferred: str = "") -> str:
         raw = (preferred or "").strip() or self.settings.anthropic_model
         return normalize_kimi_model(raw, self.settings.anthropic_model)
+=======
+        # Confirmation messages do not repeat task_type; retain the plan's mode
+        # until a new planning intent explicitly replaces it.
+        if intent.analysis_only:
+            session.analysis_only = True
+            session.work_branch = ""
+        elif intent.action not in {"execute", "iterate"}:
+            session.analysis_only = False
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
 
     def _apply_intent(
         self,
@@ -530,7 +648,13 @@ class Orchestrator:
             if intent.reply_to_user:
                 self._reply_text(chat_id, intent.reply_to_user, message_id)
             try:
-                self.feishu.send_card(chat_id, build_confirm_plan_card(session))
+                self.feishu.send_card(
+                    chat_id,
+                    build_confirm_plan_card(
+                        session,
+                        interactive=not self.settings.feishu_long_connection_enabled,
+                    ),
+                )
             except Exception as exc:  # noqa: BLE001
                 self.audit.record("feishu.card_failed", error=str(exc), session_id=session.id)
             return {"session_id": session.id, "status": session.status.value, "action": action}
@@ -605,11 +729,16 @@ class Orchestrator:
             iteration=iteration,
             executor=session.executor,
             delivery=session.delivery,
+<<<<<<< HEAD
             model=session.model,
+=======
+            analysis_only=session.analysis_only,
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
         )
         task = self.create_task(request)
         session.current_task_id = task.id
         session.work_branch = task.work_branch
+        session.analysis_only = task.analysis_only
         if task.status == TaskStatus.PENDING_APPROVAL:
             session.status = SessionStatus.AWAITING_APPROVAL
         elif task.status in {TaskStatus.QUEUED, TaskStatus.DISPATCHED, TaskStatus.RUNNING}:

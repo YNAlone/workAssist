@@ -58,7 +58,7 @@ def build_settings(tmp_path: Path) -> Settings:
         github_api_base="https://api.github.com",
         github_dispatch_ref="dev_test",
         gitlab_token="",
-        gitlab_api_base="http://10.27.249.150:8888/api/v4",
+        gitlab_api_base="https://gitlab.thinkingdata.cn/api/v4",
         gitlab_dispatch_ref="main",
         policy_file=policy_file,
         task_store_path=tmp_path / "tasks.json",
@@ -174,6 +174,71 @@ class LocalWorkerTests(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.DISPATCHED)
         self.assertEqual(task.executor, "local_worker")
 
+    def test_analysis_job_uses_detached_worktree_and_returns_markdown(self) -> None:
+        from feishu_claude_automation.local_worker import LocalWorkerRunner
+
+        runner = LocalWorkerRunner(self.settings)
+        analysis_path = self.tmp_path / "analysis-worktree"
+        job = {
+            "job_id": "analysis-1",
+            "repo": "acme/demo",
+            "prompt": "请分析项目架构",
+            "base_branch": "main",
+            "analysis_only": True,
+            "local_path": str(self.tmp_path / "repos" / "demo"),
+        }
+        with (
+            patch.object(runner, "_create_detached_worktree", return_value=analysis_path) as create_worktree,
+            patch.object(runner, "_remove_detached_worktree") as remove_worktree,
+            patch.object(runner, "_run_claude", return_value="# 架构分析\n\n结论") as run_claude,
+            patch.object(runner, "_callback") as callback,
+        ):
+            runner.execute_job(job)
+
+        create_worktree.assert_called_once()
+        run_claude.assert_called_once_with(analysis_path, "请分析项目架构", analysis_only=True)
+        remove_worktree.assert_called_once_with(self.tmp_path / "repos" / "demo", analysis_path)
+        final_payload = callback.call_args_list[-1].args[1]
+        self.assertEqual(final_payload["status"], "completed")
+        self.assertEqual(final_payload["report_markdown"], "# 架构分析\n\n结论")
+
+    def test_git_checkout_creates_new_branch_only_after_existence_check(self) -> None:
+        from feishu_claude_automation.local_worker import LocalWorkerRunner
+
+        runner = LocalWorkerRunner(self.settings)
+        repo_path = self.tmp_path / "repos" / "demo"
+        with patch.object(runner, "_run", return_value="") as run, patch.object(
+            runner, "_remote_branch_exists", return_value=False
+        ):
+            branch_exists = runner._git_checkout(
+                repo_path,
+                mode=TaskMode.CREATE.value,
+                base_branch="main",
+                work_branch="ai/new-task",
+            )
+
+        self.assertFalse(branch_exists)
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                ["git", "fetch", "origin", "main"],
+                ["git", "checkout", "-B", "ai/new-task", "origin/main"],
+            ],
+        )
+
+    def test_run_claude_keeps_prompt_outside_allowed_tools_argument(self) -> None:
+        from feishu_claude_automation.local_worker import LocalWorkerRunner
+
+        settings = Settings(**{**self.settings.__dict__, "dry_run": False})
+        runner = LocalWorkerRunner(settings)
+        with patch.object(runner, "_run", return_value="# report") as run:
+            result = runner._run_claude(self.tmp_path / "repos" / "demo", "analyze this", analysis_only=True)
+
+        self.assertEqual(result, "# report")
+        args = run.call_args.args[0]
+        self.assertIn("--allowedTools=Read,Bash", args)
+        self.assertEqual(args[-1], "analyze this")
+
     def test_runner_callback_local_only_summary(self) -> None:
         orchestrator = Orchestrator(self.settings)
         task = orchestrator.create_task(
@@ -268,10 +333,21 @@ class LocalWorkerTests(unittest.TestCase):
         with patch.object(runner, "_run_claude"), patch.object(runner, "_callback") as callback:
             runner.execute_job(job)
             callback.assert_called()
-            payload = callback.call_args[0][1]
-            self.assertEqual(payload["status"], "succeeded")
-            self.assertEqual(payload["delivery"], "local_only")
-            self.assertIn("diff_stat", payload)
+            payloads = [call.args[1] for call in callback.call_args_list]
+            self.assertEqual(payloads[-1]["status"], "succeeded")
+            self.assertEqual(payloads[-1]["delivery"], "local_only")
+            self.assertIn("diff_stat", payloads[-1])
+            self.assertEqual(
+                [payload["phase"] for payload in payloads if payload.get("phase")],
+                [
+                    "validating_workspace",
+                    "checking_work_branch",
+                    "preparing_branch",
+                    "running_claude",
+                    "collecting_result",
+                    "finalizing_local",
+                ],
+            )
 
 
 if __name__ == "__main__":

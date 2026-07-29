@@ -3,7 +3,17 @@ from __future__ import annotations
 import json
 import re
 
+from .message_content import extract_message_text
 from .models import TaskRequest
+
+__all__ = [
+    "FIELD_PATTERN",
+    "extract_message_text",
+    "looks_like_cancel",
+    "looks_like_confirmation",
+    "parse_command",
+    "strip_feishu_mentions",
+]
 
 
 FIELD_PATTERN = re.compile(r'(\w+)=(".*?"|\'.*?\'|\S+)')
@@ -31,13 +41,15 @@ def parse_command(text: str) -> TaskRequest | None:
 
     remaining = FIELD_PATTERN.sub("", body).strip()
     prompt = fields.get("desc") or remaining
-    if not fields.get("repo") or not prompt or not fields.get("branch"):
+    # `branch` is optional: Orchestrator resolves the repository's configured
+    # default branch before it validates or dispatches the task.
+    if not fields.get("repo") or not prompt:
         return None
 
     return TaskRequest(
         repo=fields["repo"],
         prompt=prompt,
-        base_branch=fields["branch"],
+        base_branch=fields.get("branch", ""),
         requester_id=fields.get("requester", ""),
         chat_id=fields.get("chat", ""),
         issue=fields.get("issue", ""),
@@ -46,19 +58,6 @@ def parse_command(text: str) -> TaskRequest | None:
         delivery=fields.get("delivery", ""),
         model=fields.get("model", ""),
     )
-
-
-def extract_message_text(payload: dict) -> str:
-    event = payload.get("event", {})
-    message = event.get("message", {})
-    content = message.get("content", "")
-    if isinstance(content, str):
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            return content
-        return parsed.get("text", content)
-    return str(content)
 
 
 def looks_like_confirmation(text: str) -> bool:

@@ -17,14 +17,20 @@ from feishu_claude_automation.config import Settings
 
 
 @pytest.fixture()
+<<<<<<< HEAD
 def pg_url(tmp_path: Path) -> str:
     """Use an isolated database unless CI explicitly provides a PostgreSQL test URL."""
     return os.getenv("TEST_DATABASE_URL", f"sqlite:///{tmp_path / 'platform.db'}")
+=======
+def sqlite_url(tmp_path: Path) -> str:
+    """Give each platform test an isolated database with no PostgreSQL dependency."""
+    return f"sqlite:///{tmp_path / 'agent_platform.db'}"
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
 
 
 @pytest.fixture()
-def store(pg_url: str) -> PlatformStore:
-    engine = create_db_engine(pg_url)
+def store(sqlite_url: str) -> PlatformStore:
+    engine = create_db_engine(sqlite_url)
     init_db(engine)
     return PlatformStore(create_session_factory(engine))
 
@@ -63,7 +69,7 @@ def settings(tmp_path: Path) -> Settings:
         github_api_base="https://api.github.com",
         github_dispatch_ref="dev_test",
         gitlab_token="",
-        gitlab_api_base="http://10.27.249.150:8888/api/v4",
+        gitlab_api_base="https://gitlab.thinkingdata.cn/api/v4",
         gitlab_dispatch_ref="main",
         policy_file=policy_file,
         task_store_path=tmp_path / "tasks.json",
@@ -107,8 +113,8 @@ def test_planner_prefers_doc_when_doc_url():
     assert tasks[0].agent_id == "doc"
 
 
-def test_orchestra_dispatches_code_job_dry_run(settings: Settings, monkeypatch, pg_url: str):
-    monkeypatch.setenv("DATABASE_URL", pg_url)
+def test_orchestra_dispatches_code_job_dry_run(settings: Settings, monkeypatch, sqlite_url: str):
+    monkeypatch.setenv("DATABASE_URL", sqlite_url)
     monkeypatch.setenv("AGENTS_FILE", str(Path("config/agents.json").resolve()))
     app = build_platform_app(settings)
     result = app.orchestra.create_and_dispatch(
@@ -134,8 +140,8 @@ def test_orchestra_dispatches_code_job_dry_run(settings: Settings, monkeypatch, 
     assert len(bundle["tasks"]) == 1
 
 
-def test_callback_updates_platform_task(settings: Settings, monkeypatch, pg_url: str):
-    monkeypatch.setenv("DATABASE_URL", pg_url)
+def test_callback_updates_platform_task(settings: Settings, monkeypatch, sqlite_url: str):
+    monkeypatch.setenv("DATABASE_URL", sqlite_url)
     monkeypatch.setenv("AGENTS_FILE", str(Path("config/agents.json").resolve()))
     app = build_platform_app(settings)
     created = app.orchestra.create_and_dispatch(

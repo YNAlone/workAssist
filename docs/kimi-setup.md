@@ -7,7 +7,7 @@
 
 ## Orchestrator 侧
 
-在 `.env` 中配置：
+在 `.env` 中配置（服务器用 `.env.orchestrator.example`，本机 Worker 只需 `ANTHROPIC_MODEL`）：
 
 | 变量 | 说明 |
 |------|------|

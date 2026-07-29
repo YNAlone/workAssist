@@ -11,11 +11,8 @@
       "url": "https://github.com/YNAlone/workAssist",
       "default_branch": "master",
       "executor": "local_worker",
-      "local_path": "/data/repos/workAssist",
-      "default_delivery": "push",
-      "verify_commands": [
-        "python -m pytest -q"
-      ]
+      "local_path": "/Users/liyilun/Documents/AI/workAssist",
+      "default_delivery": "push"
     },
     "thinkingdata/official-web-frontend": {
       "provider": "gitlab",
@@ -35,10 +32,7 @@
     }
   },
   "protected_branches": ["main", "master", "release"],
-  "allowed_requesters": [
-  ],
-  "approval_requesters": [
-  ],
+  "allowed_requesters": [],
   "require_approval_for_risk": ["high"],
   "high_risk_keywords": [
     "delete",

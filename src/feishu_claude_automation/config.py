@@ -100,6 +100,7 @@ class Settings:
     anthropic_api_key: str
     anthropic_base_url: str
     anthropic_model: str
+<<<<<<< HEAD
     database_url: str = ""
     local_worker_id: str = ""
     local_worker_lease_seconds: int = 45
@@ -109,6 +110,10 @@ class Settings:
     local_worker_log_root: Path = Path("data/worker-logs")
     local_worker_log_retention_days: int = 14
     local_worker_max_repair_loops: int = 2
+=======
+    # Enables Feishu's outbound WebSocket event delivery instead of a public webhook.
+    feishu_long_connection_enabled: bool = False
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -129,7 +134,7 @@ class Settings:
             github_api_base=os.getenv("GITHUB_API_BASE", "https://api.github.com"),
             github_dispatch_ref=os.getenv("GITHUB_DISPATCH_REF", ""),
             gitlab_token=os.getenv("GITLAB_TOKEN", ""),
-            gitlab_api_base=os.getenv("GITLAB_API_BASE", "http://10.27.249.150:8888/api/v4"),
+            gitlab_api_base=os.getenv("GITLAB_API_BASE", "https://gitlab.thinkingdata.cn/api/v4"),
             gitlab_dispatch_ref=os.getenv("GITLAB_DISPATCH_REF", ""),
             policy_file=Path(os.getenv("POLICY_FILE", root / "config/policy.example.json")),
             task_store_path=Path(os.getenv("TASK_STORE_PATH", root / "data/tasks.json")),
@@ -155,6 +160,7 @@ class Settings:
             or "",
             anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL", "https://api.kimi.com/coding/"),
             anthropic_model=normalize_kimi_model(os.getenv("ANTHROPIC_MODEL"), "kimi-for-coding"),
+<<<<<<< HEAD
             database_url=os.getenv(
                 "DATABASE_URL",
                 "postgresql+psycopg://agent:agent@127.0.0.1:5432/agent_platform",
@@ -174,5 +180,9 @@ class Settings:
             ),
             local_worker_max_repair_loops=int(
                 os.getenv("LOCAL_WORKER_MAX_REPAIR_LOOPS", "2")
+=======
+            feishu_long_connection_enabled=_bool(
+                os.getenv("FEISHU_LONG_CONNECTION_ENABLED"), False
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
             ),
         )

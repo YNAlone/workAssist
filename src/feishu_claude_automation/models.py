@@ -73,7 +73,12 @@ class TaskRequest:
     iteration: int = 0
     executor: str = ""
     delivery: str = ""
+<<<<<<< HEAD
     model: str = ""
+=======
+    # Read-only analysis tasks return a Feishu document instead of changing a repository.
+    analysis_only: bool = False
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
 
 
 @dataclass
@@ -104,10 +109,14 @@ class Task:
     mode: TaskMode = TaskMode.CREATE
     executor: str = ""
     delivery: str = ""
+<<<<<<< HEAD
     model: str = ""
     phase: str = ""
     last_heartbeat_at: str = ""
     verification: dict[str, Any] = field(default_factory=dict)
+=======
+    analysis_only: bool = False
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
 
     @classmethod
     def from_request(cls, request: TaskRequest, work_branch: str, risk_level: RiskLevel) -> Task:
@@ -129,7 +138,11 @@ class Task:
             mode=request.mode,
             executor=request.executor,
             delivery=request.delivery,
+<<<<<<< HEAD
             model=request.model,
+=======
+            analysis_only=request.analysis_only,
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -171,10 +184,14 @@ class Task:
             mode=TaskMode(mode_raw) if not isinstance(mode_raw, TaskMode) else mode_raw,
             executor=data.get("executor", ""),
             delivery=data.get("delivery", ""),
+<<<<<<< HEAD
             model=data.get("model", ""),
             phase=data.get("phase", ""),
             last_heartbeat_at=data.get("last_heartbeat_at", ""),
             verification=data.get("verification") or {},
+=======
+            analysis_only=bool(data.get("analysis_only", False)),
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
         )
 
 
@@ -210,7 +227,11 @@ class ConversationSession:
     pr_url: str = ""
     executor: str = ""
     delivery: str = ""
+<<<<<<< HEAD
     model: str = ""
+=======
+    analysis_only: bool = False
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
     messages: list[SessionMessage] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
@@ -232,7 +253,11 @@ class ConversationSession:
             "pr_url": self.pr_url,
             "executor": self.executor,
             "delivery": self.delivery,
+<<<<<<< HEAD
             "model": self.model,
+=======
+            "analysis_only": self.analysis_only,
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
             "messages": [msg.to_dict() for msg in self.messages],
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -253,7 +278,11 @@ class ConversationSession:
             pr_url=data.get("pr_url", ""),
             executor=data.get("executor", ""),
             delivery=data.get("delivery", ""),
+<<<<<<< HEAD
             model=data.get("model", ""),
+=======
+            analysis_only=bool(data.get("analysis_only", False)),
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
             messages=[SessionMessage.from_dict(item) for item in data.get("messages", [])],
             created_at=data.get("created_at", utc_now()),
             updated_at=data.get("updated_at", utc_now()),

@@ -18,6 +18,8 @@ class RepoInfo:
     name: str
     provider: str = "github"
     url: str = ""
+    # Used only when the user did not explicitly choose a base branch.
+    default_branch: str = ""
     executor: str = ""
     local_path: str = ""
     default_delivery: str = "push"
@@ -50,6 +52,7 @@ class Policy:
                 name=name,
                 provider=str((meta or {}).get("provider") or "github").lower(),
                 url=str((meta or {}).get("url") or ""),
+                default_branch=str((meta or {}).get("default_branch") or "").strip(),
                 executor=str((meta or {}).get("executor") or ""),
                 local_path=str((meta or {}).get("local_path") or ""),
                 default_delivery=str((meta or {}).get("default_delivery") or "push"),
@@ -89,10 +92,30 @@ class Policy:
         info = self.repo_catalog.get(repo)
         return info.local_path if info else ""
 
+<<<<<<< HEAD
     def verify_commands_for(self, repo: str) -> list[str]:
         """Return repository-owned verification commands in declared order."""
         info = self.repo_catalog.get(repo)
         return list(info.verify_commands) if info else []
+=======
+    def resolve_base_branch(self, *, repo: str, branch_hint: str = "") -> str:
+        """Prefer an explicit branch, then the repository default, then the global fallback."""
+        explicit = (branch_hint or "").strip()
+        if explicit:
+            return explicit
+        info = self.repo_catalog.get(repo)
+        if info and info.default_branch:
+            return info.default_branch
+        return (self.default_base_branch or "").strip()
+
+    def repo_default_branches(self) -> dict[str, str]:
+        """Expose configured per-repository defaults to the intent parser."""
+        return {
+            repo: info.default_branch
+            for repo, info in self.repo_catalog.items()
+            if info.default_branch
+        }
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
 
     def resolve_executor(self, *, repo: str, executor_hint: str = "") -> str:
         hint = (executor_hint or "").strip().lower()

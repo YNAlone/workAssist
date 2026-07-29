@@ -30,8 +30,16 @@ class CodeAgentExecutor:
         if repo:
             repo = self.policy.resolve_repo(repo) or repo
         prompt = str(inputs.get("prompt") or task.goal)
+<<<<<<< HEAD
         base_branch = str(inputs.get("base_branch") or "").strip()
         work_branch = str(inputs.get("work_branch") or self.policy.build_work_branch(task.job_id))
+=======
+        base_branch = self.policy.resolve_base_branch(
+            repo=repo,
+            branch_hint=str(inputs.get("base_branch") or ""),
+        )
+        work_branch = str(inputs.get("work_branch") or f"ai/dev-{task.id}")
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
         mode_raw = str(inputs.get("mode") or TaskMode.CREATE.value)
         mode = TaskMode(mode_raw) if mode_raw in {m.value for m in TaskMode} else TaskMode.CREATE
 
@@ -44,14 +52,16 @@ class CodeAgentExecutor:
             chat_id=task.chat_id,
             session_id=task.job_id,
             mode=mode,
+<<<<<<< HEAD
             executor=str(inputs.get("executor") or ""),
             delivery=str(inputs.get("delivery") or ""),
             model=str(inputs.get("model") or ""),
+=======
+            analysis_only=bool(inputs.get("analysis_only", False)),
+>>>>>>> f6f985d0c15a12f289af3310209e2ca4c843efda
         )
         if not request.repo:
             raise ValueError("code task requires inputs.repo")
-        if not request.base_branch:
-            raise ValueError("code task requires inputs.base_branch")
         self.policy.validate_request(request)
 
         legacy = Task.from_request(request, work_branch=work_branch, risk_level=RiskLevel.LOW)
